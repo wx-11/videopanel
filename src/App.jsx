@@ -56,47 +56,309 @@ const IconCopy = ({ size = 16, className = "" }) => (
     <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
 );
 
+const STORAGE_KEYS = {
+  config: 'sora2_manager_config_v1',
+  queue: 'sora2_manager_queue_v1',
+  projects: 'sora2_manager_projects_v1',
+  ui: 'sora2_manager_ui_v1',
+};
 
-export default function App() {
-  // --- 全局配置 ---
-  const [config, setConfig] = useState({
-    baseUrl: 'http://localhost:8000/v1/chat/completions',
-    apiKey: 'han1234',
-    maxConcurrent: 3, 
-    taskInterval: 1.0, 
+const MAX_SAVED_TASKS = 200;
+const PROJECT_IMAGES_DB = {
+  name: 'sora2_manager_project_images_v1',
+  version: 1,
+  store: 'images',
+};
+
+const safeJsonParse = (value, fallback) => {
+  if (!value || typeof value !== 'string') return fallback;
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return fallback;
+  }
+};
+
+const DEFAULT_CONFIG = {
+  baseUrl: 'http://localhost:8000/v1/chat/completions',
+  apiKey: 'han1234',
+  maxConcurrent: 3,
+  taskInterval: 1.0,
+};
+
+const DEFAULT_UI_STATE = {
+  activeProjectId: 1,
+  orientation: 'portrait',
+  duration: '15s',
+  modelFamily: 'sora2',
+  generationType: 'image',
+  recordsScope: 'project',
+  batchMode: 'script',
+  repeatCount: 5,
+};
+
+const getInitialConfig = () => {
+  if (typeof window === 'undefined' || !window.localStorage) return { ...DEFAULT_CONFIG };
+
+  const saved = safeJsonParse(window.localStorage.getItem(STORAGE_KEYS.config), null);
+  if (!saved || typeof saved !== 'object') return { ...DEFAULT_CONFIG };
+
+  return {
+    ...DEFAULT_CONFIG,
+    baseUrl: typeof saved.baseUrl === 'string' ? saved.baseUrl : DEFAULT_CONFIG.baseUrl,
+    apiKey: typeof saved.apiKey === 'string' ? saved.apiKey : DEFAULT_CONFIG.apiKey,
+    maxConcurrent: Math.max(1, parseInt(saved.maxConcurrent, 10) || DEFAULT_CONFIG.maxConcurrent),
+    taskInterval: Math.max(0.1, parseFloat(saved.taskInterval) || DEFAULT_CONFIG.taskInterval),
+  };
+};
+
+const getInitialUiState = () => {
+  if (typeof window === 'undefined' || !window.localStorage) return { ...DEFAULT_UI_STATE };
+
+  const saved = safeJsonParse(window.localStorage.getItem(STORAGE_KEYS.ui), null);
+  if (!saved || typeof saved !== 'object') return { ...DEFAULT_UI_STATE };
+
+  const rawActiveProjectId = saved.activeProjectId;
+  let activeProjectId = typeof rawActiveProjectId === 'number' ? rawActiveProjectId : parseInt(rawActiveProjectId, 10);
+  if (!Number.isFinite(activeProjectId)) activeProjectId = DEFAULT_UI_STATE.activeProjectId;
+
+  const allowedModelFamilies = new Set([
+    'sora2',
+    'sora2pro',
+    'sora2pro-hd',
+    'prompt-enhance-short',
+    'prompt-enhance-medium',
+    'prompt-enhance-long',
+  ]);
+
+  return {
+    ...DEFAULT_UI_STATE,
+    activeProjectId,
+    orientation: saved.orientation === 'landscape' || saved.orientation === 'portrait' ? saved.orientation : DEFAULT_UI_STATE.orientation,
+    duration: saved.duration === '10s' || saved.duration === '15s' ? saved.duration : DEFAULT_UI_STATE.duration,
+    modelFamily: (typeof saved.modelFamily === 'string' && allowedModelFamilies.has(saved.modelFamily)) ? saved.modelFamily : DEFAULT_UI_STATE.modelFamily,
+    generationType: saved.generationType === 'text' || saved.generationType === 'image' ? saved.generationType : DEFAULT_UI_STATE.generationType,
+    recordsScope: saved.recordsScope === 'all' ? 'all' : DEFAULT_UI_STATE.recordsScope,
+    batchMode: saved.batchMode === 'repeat' || saved.batchMode === 'script' ? saved.batchMode : DEFAULT_UI_STATE.batchMode,
+    repeatCount: Math.max(1, parseInt(saved.repeatCount, 10) || DEFAULT_UI_STATE.repeatCount),
+  };
+};
+
+const normalizeLoadedProject = (input) => {
+  if (!input || typeof input !== 'object') return null;
+
+  const rawId = input.id;
+  let id = typeof rawId === 'number' ? rawId : parseInt(rawId, 10);
+  if (!Number.isFinite(id)) id = Date.now() + Math.random();
+
+  const project = {
+    id,
+    name: input.name ? String(input.name) : `项目 ${id}`,
+    prompt: input.prompt ? String(input.prompt) : '',
+    image: (typeof input.image === 'string' && input.image.startsWith('data:')) ? input.image : null,
+    imageName: input.imageName ? String(input.imageName) : null,
+  };
+
+  return project;
+};
+
+const getInitialProjects = () => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return [
+      { id: 1, name: '示例项目 A', prompt: 'Product cinematic shot on a wooden table, 这是台词文案, 4k resolution.', image: null, imageName: null },
+    ];
+  }
+
+  const saved = safeJsonParse(window.localStorage.getItem(STORAGE_KEYS.projects), null);
+  if (!Array.isArray(saved) || saved.length === 0) {
+    return [
+      { id: 1, name: '示例项目 A', prompt: 'Product cinematic shot on a wooden table, 这是台词文案, 4k resolution.', image: null, imageName: null },
+    ];
+  }
+
+  const projects = saved.map(normalizeLoadedProject).filter(Boolean);
+  return projects.length > 0 ? projects : [
+    { id: 1, name: '示例项目 A', prompt: 'Product cinematic shot on a wooden table, 这是台词文案, 4k resolution.', image: null, imageName: null },
+  ];
+};
+
+let projectImagesDbPromise = null;
+const getProjectImagesDb = () => {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (projectImagesDbPromise) return projectImagesDbPromise;
+
+  projectImagesDbPromise = new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(PROJECT_IMAGES_DB.name, PROJECT_IMAGES_DB.version);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(PROJECT_IMAGES_DB.store)) {
+          db.createObjectStore(PROJECT_IMAGES_DB.store);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch (e) {
+      resolve(null);
+    }
   });
 
+  return projectImagesDbPromise;
+};
+
+const idbGetProjectImage = async (projectId) => {
+  const db = await getProjectImagesDb();
+  if (!db) return null;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(PROJECT_IMAGES_DB.store, 'readonly');
+      const store = tx.objectStore(PROJECT_IMAGES_DB.store);
+      const req = store.get(String(projectId));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch (e) {
+      resolve(null);
+    }
+  });
+};
+
+const idbSetProjectImage = async (projectId, dataUrl) => {
+  const db = await getProjectImagesDb();
+  if (!db) return false;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(PROJECT_IMAGES_DB.store, 'readwrite');
+      const store = tx.objectStore(PROJECT_IMAGES_DB.store);
+      store.put({ dataUrl: String(dataUrl), updatedAt: Date.now() }, String(projectId));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch (e) {
+      resolve(false);
+    }
+  });
+};
+
+const idbDeleteProjectImage = async (projectId) => {
+  const db = await getProjectImagesDb();
+  if (!db) return false;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(PROJECT_IMAGES_DB.store, 'readwrite');
+      const store = tx.objectStore(PROJECT_IMAGES_DB.store);
+      store.delete(String(projectId));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch (e) {
+      resolve(false);
+    }
+  });
+};
+
+const normalizeLoadedTask = (input) => {
+  if (!input || typeof input !== 'object') return null;
+
+  const rawProjectId = input.projectId;
+  let projectId = typeof rawProjectId === 'number' ? rawProjectId : parseInt(rawProjectId, 10);
+  if (!Number.isFinite(projectId)) projectId = null;
+
+  const status = typeof input.status === 'string' ? input.status : 'FAILED';
+  const progressRaw = typeof input.progress === 'number' ? input.progress : parseInt(input.progress, 10);
+  const progress = Number.isFinite(progressRaw) ? Math.max(0, Math.min(100, progressRaw)) : 0;
+
+  const normalized = {
+    id: input.id ?? (Date.now() + Math.random()),
+    projectId,
+    projectName: input.projectName ? String(input.projectName) : '',
+    prompt: input.prompt ? String(input.prompt) : '',
+    scriptSnippet: input.scriptSnippet ? String(input.scriptSnippet) : '',
+    status,
+    stage: input.stage ? String(input.stage) : '',
+    progress,
+    videoUrl: input.videoUrl ? String(input.videoUrl) : null,
+    errorMessage: input.errorMessage ? String(input.errorMessage) : null,
+    streamLog: input.streamLog ? String(input.streamLog) : '',
+    warning: input.warning ? String(input.warning) : null,
+    timestamp: input.timestamp ? String(input.timestamp) : new Date().toLocaleString(),
+    modelUsed: input.modelUsed ? String(input.modelUsed) : undefined,
+    generationType: input.generationType ? String(input.generationType) : 'image',
+    image: null,
+  };
+
+  const isTerminal = normalized.status === 'COMPLETED' || normalized.status === 'FAILED';
+  if (!isTerminal) {
+    normalized.status = 'FAILED';
+    normalized.stage = '已中断';
+    normalized.progress = 0;
+    normalized.errorMessage = normalized.errorMessage || '任务在上次运行中被中断（未完成）。';
+  }
+
+  if (normalized.status === 'COMPLETED' && !normalized.videoUrl) {
+    normalized.status = 'FAILED';
+    normalized.stage = '无视频链接';
+    normalized.progress = 0;
+    normalized.errorMessage = normalized.errorMessage || '记录缺少 videoUrl，无法播放或下载。';
+  }
+
+  return normalized;
+};
+
+const getInitialQueue = () => {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+
+  const saved = safeJsonParse(window.localStorage.getItem(STORAGE_KEYS.queue), []);
+  if (!Array.isArray(saved)) return [];
+
+  return saved.map(normalizeLoadedTask).filter(Boolean);
+};
+
+
+export default function App() {
+  const initialUiStateRef = useRef(null);
+  if (initialUiStateRef.current === null) {
+    initialUiStateRef.current = getInitialUiState();
+  }
+  const initialUiState = initialUiStateRef.current;
+
+  // --- 全局配置 ---
+  const [config, setConfig] = useState(() => getInitialConfig());
+
   // --- 项目管理状态 ---
-  const [projects, setProjects] = useState([
-      { id: 1, name: '示例项目 A', prompt: 'Product cinematic shot on a wooden table, 这是台词文案, 4k resolution.', image: null, imageName: null }
-  ]);
-  const [activeProjectId, setActiveProjectId] = useState(1);
+  const [projects, setProjects] = useState(() => getInitialProjects());
+  const [activeProjectId, setActiveProjectId] = useState(() => initialUiState.activeProjectId);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editName, setEditName] = useState('');
 
   // --- 当前项目输入状态 ---
-  const [activeProject, setActiveProject] = useState(projects[0]);
-  const [orientation, setOrientation] = useState('portrait');
-  const [duration, setDuration] = useState('15s');
-  const [modelName, setModelName] = useState('sora-video-portrait-15s');
-  const [generationType, setGenerationType] = useState('image'); 
+  const [activeProject, setActiveProject] = useState(() => projects.find(p => p.id === initialUiState.activeProjectId) || projects[0]);
+  const [orientation, setOrientation] = useState(() => initialUiState.orientation);
+  const [duration, setDuration] = useState(() => initialUiState.duration);
+  const [modelFamily, setModelFamily] = useState(() => initialUiState.modelFamily);
+  const selectedModelName = modelFamily.startsWith('prompt-enhance')
+      ? `${modelFamily}-${duration}`
+      : `${modelFamily}-${orientation}-${duration}`;
+  const [generationType, setGenerationType] = useState(() => initialUiState.generationType); 
+  const [recordsScope, setRecordsScope] = useState(() => initialUiState.recordsScope || 'project');
 
   // --- 批量生成状态 ---
   const [showBatchModal, setShowBatchModal] = useState(false);
-  const [batchMode, setBatchMode] = useState('script'); 
+  const [batchMode, setBatchMode] = useState(() => initialUiState.batchMode); 
   const [batchScripts, setBatchScripts] = useState(['']);
-  const [repeatCount, setRepeatCount] = useState(5);
+  const [repeatCount, setRepeatCount] = useState(() => initialUiState.repeatCount);
   
   // --- App 状态 ---
   const [showDebug, setShowDebug] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [queue, setQueue] = useState([]);
+  const [queue, setQueue] = useState(() => getInitialQueue());
   const [logs, setLogs] = useState([]);
   const [curlPreview, setCurlPreview] = useState('');
   
   // --- 交互状态 (Toast, Tooltip) ---
   const [activeTooltip, setActiveTooltip] = useState(null);
   const [toastVisible, setToastVisible] = useState(false);
+  const [activeVideoTaskId, setActiveVideoTaskId] = useState(null);
 
   // --- 调度器状态 ---
   const logsEndRef = useRef(null);
@@ -104,6 +366,11 @@ export default function App() {
   const lastTaskStartTime = useRef(0);
   const [tick, setTick] = useState(0);
   const toastTimer = useRef(null);
+  const persistConfigTimer = useRef(null);
+  const persistQueueTimer = useRef(null);
+  const persistProjectsTimer = useRef(null);
+  const persistUiTimer = useRef(null);
+  const didMigrateQueueProjectIds = useRef(false);
 
   // --- 辅助函数：复制并显示 Toast ---
   const handleCopy = (text) => {
@@ -130,6 +397,153 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+
+    if (persistConfigTimer.current) clearTimeout(persistConfigTimer.current);
+    persistConfigTimer.current = setTimeout(() => {
+      try {
+        window.localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(config));
+      } catch (e) { }
+    }, 200);
+
+    return () => {
+      if (persistConfigTimer.current) clearTimeout(persistConfigTimer.current);
+    };
+  }, [config]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+
+    if (persistQueueTimer.current) clearTimeout(persistQueueTimer.current);
+    persistQueueTimer.current = setTimeout(() => {
+      try {
+        const tasksToSave = queue.slice(0, MAX_SAVED_TASKS).map((t) => ({
+          id: t.id,
+          projectId: t.projectId,
+          projectName: t.projectName,
+          prompt: t.prompt,
+          scriptSnippet: t.scriptSnippet,
+          status: t.status,
+          stage: t.stage,
+          progress: t.progress,
+          videoUrl: t.videoUrl,
+          errorMessage: t.errorMessage,
+          streamLog: t.streamLog ? String(t.streamLog).slice(-1000) : '',
+          warning: t.warning,
+          timestamp: t.timestamp,
+          modelUsed: t.modelUsed,
+          generationType: t.generationType,
+        }));
+        window.localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(tasksToSave));
+      } catch (e) { }
+    }, 1000);
+
+    return () => {
+      if (persistQueueTimer.current) clearTimeout(persistQueueTimer.current);
+    };
+  }, [queue]);
+
+  useEffect(() => {
+    if (didMigrateQueueProjectIds.current) return;
+    if (!Array.isArray(queue) || queue.length === 0) {
+      didMigrateQueueProjectIds.current = true;
+      return;
+    }
+    if (!Array.isArray(projects) || projects.length === 0) return;
+
+    const nameToId = new Map(projects.map(p => [String(p.name || ''), p.id]));
+    let changed = false;
+    const migrated = queue.map((t) => {
+      if (t.projectId !== null && t.projectId !== undefined) return t;
+      const mappedId = nameToId.get(String(t.projectName || ''));
+      if (mappedId === null || mappedId === undefined) return t;
+      changed = true;
+      return { ...t, projectId: mappedId };
+    });
+
+    if (changed) setQueue(migrated);
+    didMigrateQueueProjectIds.current = true;
+  }, [queue, projects]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+
+    if (persistUiTimer.current) clearTimeout(persistUiTimer.current);
+    persistUiTimer.current = setTimeout(() => {
+      try {
+        const uiState = {
+          activeProjectId,
+          orientation,
+          duration,
+          modelFamily,
+          generationType,
+          recordsScope,
+          batchMode,
+          repeatCount,
+        };
+        window.localStorage.setItem(STORAGE_KEYS.ui, JSON.stringify(uiState));
+      } catch (e) { }
+    }, 200);
+
+    return () => {
+      if (persistUiTimer.current) clearTimeout(persistUiTimer.current);
+    };
+  }, [activeProjectId, orientation, duration, modelFamily, generationType, recordsScope, batchMode, repeatCount]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+
+    if (persistProjectsTimer.current) clearTimeout(persistProjectsTimer.current);
+    persistProjectsTimer.current = setTimeout(() => {
+      try {
+        const canUseIdb = typeof indexedDB !== 'undefined';
+        const projectsToSave = projects.map((p) => ({
+          id: p.id,
+          name: p.name,
+          prompt: p.prompt,
+          imageName: p.imageName,
+          image: canUseIdb ? undefined : p.image,
+        }));
+        window.localStorage.setItem(STORAGE_KEYS.projects, JSON.stringify(projectsToSave));
+      } catch (e) { }
+    }, 500);
+
+    return () => {
+      if (persistProjectsTimer.current) clearTimeout(persistProjectsTimer.current);
+    };
+  }, [projects]);
+
+  useEffect(() => {
+    if (!Array.isArray(projects) || projects.length === 0) return;
+    if (!projects.some(p => p.id === activeProjectId)) {
+      setActiveProjectId(projects[0].id);
+    }
+  }, [projects, activeProjectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateImages = async () => {
+      const snapshot = Array.isArray(projects) ? projects : [];
+      for (const proj of snapshot) {
+        if (cancelled) return;
+        if (!proj?.id || proj.image) continue;
+
+        const record = await idbGetProjectImage(proj.id);
+        if (cancelled) return;
+
+        const dataUrl = record?.dataUrl;
+        if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+          setProjects(prev => prev.map(p => p.id === proj.id ? { ...p, image: dataUrl } : p));
+        }
+      }
+    };
+
+    hydrateImages();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     const runningCount = queue.filter(t => t.status === 'GENERATING' || t.status === 'STARTING' || t.status === 'PROCESSING' || t.status === 'CACHING').length;
     const pendingTasks = queue.filter(t => t.status === 'PENDING');
 
@@ -148,24 +562,38 @@ export default function App() {
         if (nextTask) {
             lastTaskStartTime.current = Date.now();
             updateTask(nextTask.id, { status: 'STARTING', stage: '准备发射' });
-            processTask(nextTask.id, nextTask.prompt, nextTask.image, nextTask.generationType);
+            processTask(nextTask.id, nextTask.prompt, nextTask.image, nextTask.generationType, nextTask.modelUsed);
         }
     }
   }, [queue, config.maxConcurrent, config.taskInterval, tick]);
 
   useEffect(() => {
       const proj = projects.find(p => p.id === activeProjectId);
-      if (proj) setActiveProject(proj);
+      if (!proj) return;
+      setActiveProject(prev => {
+          if (!prev) return proj;
+          if (prev.id !== proj.id) return proj;
+          if (
+              prev.name === proj.name &&
+              prev.prompt === proj.prompt &&
+              prev.image === proj.image &&
+              prev.imageName === proj.imageName
+          ) {
+              return prev;
+          }
+          return proj;
+      });
   }, [activeProjectId, projects]);
-
-  useEffect(() => {
-    const newModelName = `sora-video-${orientation}-${duration}`;
-    setModelName(newModelName);
-  }, [orientation, duration]);
 
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
+
+  useEffect(() => {
+      if (showBatchModal && batchMode === 'script') {
+          batchInputRef.current?.focus();
+      }
+  }, [showBatchModal, batchMode]);
 
   useEffect(() => {
     if (!activeProject) return;
@@ -177,7 +605,7 @@ export default function App() {
         ? previewPrompt
         : [{ type: "text", text: previewPrompt }, { type: "image_url", image_url: { url: activeProject.image || "data:image/..." } }];
     const payload = {
-        model: modelName,
+        model: selectedModelName,
         messages: [{ role: "user", content: content }],
         stream: true
     };
@@ -189,7 +617,7 @@ export default function App() {
     }
     const cmd = `curl -X POST "${config.baseUrl}" \\\n  -H "Authorization: Bearer ${config.apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(previewJson, null, 2)}'`;
     setCurlPreview(cmd);
-  }, [config, activeProject, modelName, generationType]);
+  }, [config, activeProject, selectedModelName, generationType]);
 
   // --- 处理器 ---
 
@@ -206,6 +634,7 @@ export default function App() {
       const newProjects = projects.filter(p => p.id !== id);
       setProjects(newProjects);
       if (activeProjectId === id) setActiveProjectId(newProjects[0].id);
+      idbDeleteProjectImage(id);
   };
 
   const startRenaming = (e, project) => {
@@ -222,17 +651,23 @@ export default function App() {
 
   const updateActiveProject = (field, value) => {
       setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, [field]: value } : p));
+      setActiveProject(prev => (prev && prev.id === activeProjectId) ? { ...prev, [field]: value } : prev);
   };
 
   const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setProjects(prev => prev.map(p => p.id === activeProjectId ? { ...p, image: reader.result, imageName: file.name } : p));
-      };
-      reader.readAsDataURL(file);
-    }
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : null;
+      if (!dataUrl) return;
+
+      updateActiveProject('image', dataUrl);
+      updateActiveProject('imageName', file.name);
+      idbSetProjectImage(activeProjectId, dataUrl);
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleScriptChange = (index, value) => {
@@ -279,6 +714,7 @@ export default function App() {
       const newTaskId = Date.now() + Math.random(); 
       const newTask = {
           id: newTaskId,
+          projectId: activeProjectId,
           projectName: activeProject.name,
           prompt: String(prompt),
           scriptSnippet: String(scriptSnippet), 
@@ -288,12 +724,12 @@ export default function App() {
           videoUrl: null,
           errorMessage: null,
           streamLog: '', 
-          warning: null, 
-          timestamp: new Date().toLocaleString(),
-          modelUsed: modelName,
-          image: activeProject.image,
-          generationType: generationType, 
-      };
+           warning: null, 
+           timestamp: new Date().toLocaleString(),
+           modelUsed: selectedModelName,
+           image: activeProject.image,
+           generationType: generationType, 
+       };
       setQueue(prev => [newTask, ...prev]);
   };
 
@@ -306,23 +742,51 @@ export default function App() {
       setQueue(prev => prev.map(t => t.id === id ? { ...t, ...updates } : t));
   };
 
-  const triggerDownload = (url, taskId) => {
-    const filename = `sora_task_${taskId}.mp4`;
+  const toSafeFilename = (input) => {
+      const name = String(input || '')
+          .replace(/[\\/:*?"<>|]/g, '_')
+          .replace(/\s+/g, ' ')
+          .trim();
+      return name || 'sora_video';
+  };
+
+  const triggerDownload = (url, taskId, suggestedBaseName) => {
+    if (!url) return;
+
+    const safeTaskId = String(taskId ?? '').replace(/[^0-9a-zA-Z_-]/g, '_');
+    const baseName = suggestedBaseName ? toSafeFilename(suggestedBaseName) : `sora_task_${safeTaskId || 'unknown'}`;
+    const filename = baseName.toLowerCase().endsWith('.mp4') ? baseName : `${baseName}.mp4`;
     if (window.electronAPI && typeof window.electronAPI.downloadVideo === 'function') {
         window.electronAPI.downloadVideo(url, filename);
         addLog(`[任务 ${taskId}] 已触发原生下载。`, 'success');
+        return;
+    }
+
+    try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.rel = 'noreferrer';
+        a.target = '_blank';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        addLog(`[任务 ${taskId}] 已触发下载 (Web)。`, 'success');
+    } catch (e) {
+        window.open(url, '_blank', 'noopener,noreferrer');
     }
   };
 
-  const processTask = async (taskId, taskPrompt, taskImage, taskType) => {
+  const processTask = async (taskId, taskPrompt, taskImage, taskType, taskModel) => {
       updateTask(taskId, { status: 'GENERATING', stage: '初始化中', progress: 0 });
       let hasReceivedData = false;
+      let hasResolvedVideo = false;
 
       try {
           const content = taskType === 'text'
               ? String(taskPrompt)
               : [{ type: "text", text: String(taskPrompt) }, { type: "image_url", image_url: { url: taskImage } }];
-          const payload = { model: modelName, messages: [{ role: "user", content: content }], stream: true };
+          const payload = { model: taskModel, messages: [{ role: "user", content: content }], stream: true };
           const response = await fetch(config.baseUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` },
@@ -356,7 +820,8 @@ export default function App() {
                           const delta = data.choices?.[0]?.delta;
                           const combinedChunk = (delta?.content || "") + (delta?.reasoning_content || "");
                           
-                          if (combinedChunk) {
+                           if (combinedChunk) {
+                              if (hasResolvedVideo) continue;
                               accumulatedContent += combinedChunk;
                               const updates = { streamLog: accumulatedContent.length > 1000 ? '...' + accumulatedContent.slice(-1000) : accumulatedContent };
 
@@ -412,9 +877,14 @@ export default function App() {
                               const urlMatch = combinedChunk.match(/(https?:\/\/[^\s)"]+)/);
                               let foundUrl = srcMatch ? srcMatch[1] : (urlMatch && !combinedChunk.includes("<") ? urlMatch[0] : null);
 
-                              if (foundUrl) {
+                              if (foundUrl && !hasResolvedVideo) {
+                                  hasResolvedVideo = true;
                                   updateTask(taskId, { status: 'COMPLETED', stage: '已完成', progress: 100, videoUrl: foundUrl });
-                                  triggerDownload(foundUrl, taskId);
+                                  if (window.electronAPI && typeof window.electronAPI.downloadVideo === 'function') {
+                                      triggerDownload(foundUrl, taskId);
+                                  }
+                                  try { await reader.cancel(); } catch (e) { }
+                                  return;
                               }
                           }
                       } catch (e) {
@@ -431,6 +901,10 @@ export default function App() {
           updateTask(taskId, { status: 'FAILED', stage: finalStage, progress: 0, errorMessage: err.message });
       }
   };
+
+  const visibleQueue = recordsScope === 'all'
+      ? queue
+      : queue.filter(t => t.projectId === activeProjectId);
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-900 font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden relative">
@@ -457,7 +931,7 @@ export default function App() {
                     <div key={proj.id} onClick={() => setActiveProjectId(proj.id)} className={`group flex items-center gap-3 px-3 py-3 rounded-lg cursor-pointer transition-colors border ${activeProjectId === proj.id ? 'bg-white border-gray-200 shadow-sm text-blue-600' : 'border-transparent text-gray-600 hover:bg-gray-100'}`}>
                         <IconFolder size={16} className={activeProjectId === proj.id ? 'text-blue-400' : 'text-gray-600'} />
                         {editingProjectId === proj.id ? (
-                            <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} onBlur={saveRename} onKeyDown={(e) => e.key === 'Enter' && saveRename()} className="bg-white border border-blue-500 rounded px-1 py-0.5 text-xs text-gray-900 w-full outline-none" />
+                            <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} onBlur={saveRename} onKeyDown={(e) => e.key === 'Enter' && !(e.isComposing || e.nativeEvent.isComposing) && saveRename()} className="bg-white border border-blue-500 rounded px-1 py-0.5 text-xs text-gray-900 w-full outline-none" />
                         ) : (
                             <span className="text-sm font-medium truncate flex-1">{String(proj.name || '')}</span>
                         )}
@@ -511,6 +985,17 @@ export default function App() {
                         </div>
                         <div className="lg:col-span-4 flex flex-col gap-6 bg-gray-50 p-6 rounded-xl border border-gray-100">
                             <div className="space-y-3">
+                                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Model</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <button onClick={() => setModelFamily('sora2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2</button>
+                                    <button onClick={() => setModelFamily('sora2pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro</button>
+                                    <button onClick={() => setModelFamily('sora2pro-hd')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro-hd' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro-hd</button>
+                                    <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-short</button>
+                                    <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-medium</button>
+                                    <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-long</button>
+                                </div>
+                            </div>
+                            <div className="space-y-3">
                                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">画面方向</label>
                                 <div className="grid grid-cols-2 gap-2">
                                     <button onClick={() => setOrientation('landscape')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${orientation === 'landscape' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>横屏</button>
@@ -526,7 +1011,7 @@ export default function App() {
                             </div>
                             <div className="space-y-3">
                                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
-                                <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(modelName)}</div>
+                                <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedModelName)}</div>
                             </div>
                             <div className="flex-1"></div>
                             <div className="flex bg-gray-100 p-1 rounded-lg mb-2">
@@ -541,7 +1026,13 @@ export default function App() {
                 <section className="flex-1 pb-20">
                     <div className="flex items-center justify-between mb-4 px-1">
                         <h2 className="text-lg font-bold text-gray-900">生产队列</h2>
-                        <span className="text-xs font-medium bg-gray-200 text-gray-600 px-2 py-1 rounded-full">{queue.length} 个任务</span>
+                        <div className="flex items-center gap-3">
+                            <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+                                <button onClick={() => setRecordsScope('project')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${recordsScope === 'project' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>当前项目</button>
+                                <button onClick={() => setRecordsScope('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${recordsScope === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>全部记录</button>
+                            </div>
+                            <span className="text-xs font-medium bg-gray-200 text-gray-600 px-2 py-1 rounded-full">{visibleQueue.length} 个任务</span>
+                        </div>
                     </div>
                     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm min-h-[200px]">
                         <div className="overflow-x-auto">
@@ -554,12 +1045,20 @@ export default function App() {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100">
-                                    {queue.map((task) => (
+                                    {visibleQueue.map((task) => (
                                         <tr key={task.id} className="group hover:bg-gray-50 transition-colors">
                                             <td className="p-4">
-                                                <div className="w-24 h-14 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden relative shadow-sm">
+                                                <div
+                                                    onClick={() => { if (task.status === 'COMPLETED' && task.videoUrl) setActiveVideoTaskId(task.id); }}
+                                                    className={`w-24 h-14 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden relative shadow-sm ${task.status === 'COMPLETED' && task.videoUrl ? 'cursor-pointer hover:border-blue-400' : ''}`}
+                                                >
                                                     {task.status === 'COMPLETED' && task.videoUrl ? (
-                                                        <video src={String(task.videoUrl)} className="w-full h-full object-cover" muted onMouseOver={e => e.target.play()} onMouseOut={e => e.target.pause()} />
+                                                        <>
+                                                            <video src={String(task.videoUrl)} className="w-full h-full object-cover" muted onMouseOver={e => e.target.play()} onMouseOut={e => e.target.pause()} />
+                                                            <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                <span className="text-white text-[10px] font-bold">播放</span>
+                                                            </div>
+                                                        </>
                                                     ) : (
                                                         <div className="flex flex-col items-center gap-1">
                                                             {(task.status === 'GENERATING' || task.status === 'STARTING' || task.status === 'PROCESSING' || task.status === 'CACHING') && <IconLoader className="text-blue-500" />}
@@ -593,7 +1092,25 @@ export default function App() {
                                                 onClick={() => { if (task.status === 'FAILED' && task.errorMessage) handleCopy(task.errorMessage); }}
                                                 style={{ cursor: 'help' }}
                                             >
-                                                <StatusBadge status={task.status} stage={task.stage} progress={task.progress} warning={task.warning} />
+                                                <div className="flex flex-col gap-2">
+                                                    <StatusBadge status={task.status} stage={task.stage} progress={task.progress} warning={task.warning} />
+                                                    {task.status === 'COMPLETED' && task.videoUrl && (
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); setActiveVideoTaskId(task.id); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+                                                            >
+                                                                播放
+                                                            </button>
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); triggerDownload(task.videoUrl, task.id, `${task.projectName || 'sora_task'}_${task.id}`); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                                                            >
+                                                                下载
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </div>
                                             </td>
                                         </tr>
                                     ))}
@@ -617,7 +1134,7 @@ export default function App() {
                       {batchMode === 'script' ? (
                           <div className="w-full space-y-3">
                               {batchScripts.map((script, idx) => (
-                                  <div key={idx} className="flex gap-3 items-center animate-in slide-in-from-left-2 duration-300"><span className="text-xs font-mono text-gray-400 w-6 text-right">{idx + 1}.</span><input ref={idx === batchScripts.length - 1 ? batchInputRef : null} type="text" value={String(script)} placeholder={idx === batchScripts.length - 1 ? "输入新台词文案..." : ""} onChange={(e) => handleScriptChange(idx, e.target.value)} className="flex-1 bg-white border border-gray-300 rounded-lg px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all shadow-sm" autoFocus={idx === batchScripts.length - 1} /></div>
+                                  <div key={idx} className="flex gap-3 items-center animate-in slide-in-from-left-2 duration-300"><span className="text-xs font-mono text-gray-400 w-6 text-right">{idx + 1}.</span><input ref={idx === batchScripts.length - 1 ? batchInputRef : null} type="text" value={String(script)} placeholder={idx === batchScripts.length - 1 ? "输入新台词文案..." : ""} onChange={(e) => handleScriptChange(idx, e.target.value)} className="flex-1 bg-white border border-gray-300 rounded-lg px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all shadow-sm" /></div>
                               ))}
                           </div>
                       ) : (
@@ -660,6 +1177,49 @@ export default function App() {
               </div>
           </div>
       )}
+
+      {activeVideoTaskId && (() => {
+          const task = queue.find(t => t.id === activeVideoTaskId);
+          if (!task?.videoUrl) return null;
+          const videoUrl = String(task.videoUrl);
+          const suggestedName = `${task.projectName || 'sora_task'}_${task.id}`;
+
+          return (
+              <div
+                  className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+                  onClick={() => setActiveVideoTaskId(null)}
+              >
+                  <div className="bg-white border border-gray-200 rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 gap-4">
+                          <div className="min-w-0">
+                              <div className="text-sm font-bold text-gray-900 truncate">{String(task.projectName || `任务 ${task.id}`)}</div>
+                              <div className="text-[10px] text-gray-500 font-mono truncate">{videoUrl}</div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                  onClick={(e) => { e.stopPropagation(); handleCopy(videoUrl); }}
+                                  className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                              >
+                                  复制链接
+                              </button>
+                              <button
+                                  onClick={(e) => { e.stopPropagation(); triggerDownload(videoUrl, task.id, suggestedName); }}
+                                  className="px-3 py-1.5 text-xs font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                              >
+                                  下载
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); setActiveVideoTaskId(null); }} className="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-lg" title="关闭">
+                                  <IconX size={18} />
+                              </button>
+                          </div>
+                      </div>
+                      <div className="bg-black">
+                          <video src={videoUrl} controls autoPlay className="w-full max-h-[70vh] object-contain" />
+                      </div>
+                  </div>
+              </div>
+          );
+      })()}
 
       {/* 智能悬浮窗 */}
       {activeTooltip && (() => {
