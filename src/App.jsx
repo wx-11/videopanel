@@ -55,6 +55,20 @@ const IconScript = ({ size = 16, className = "" }) => (
 const IconCopy = ({ size = 16, className = "" }) => (
     <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
 );
+const IconMic = ({ size = 16, className = "" }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M12 14a4 4 0 0 0 4-4V6a4 4 0 1 0-8 0v4a4 4 0 0 0 4 4Z" />
+    <path d="M19 10v1a7 7 0 0 1-14 0v-1" />
+    <line x1="12" y1="18" x2="12" y2="22" />
+    <line x1="8" y1="22" x2="16" y2="22" />
+  </svg>
+);
+const IconArrowUp = ({ size = 16, className = "" }) => (
+  <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M12 19V5" />
+    <path d="m5 12 7-7 7 7" />
+  </svg>
+);
 
 const STORAGE_KEYS = {
   config: 'sora2_manager_config_v1',
@@ -68,6 +82,11 @@ const PROJECT_IMAGES_DB = {
   name: 'sora2_manager_project_images_v1',
   version: 1,
   store: 'images',
+};
+const TASK_OUTPUTS_DB = {
+  name: 'sora2_manager_task_outputs_v1',
+  version: 1,
+  store: 'outputs',
 };
 
 const safeJsonParse = (value, fallback) => {
@@ -87,10 +106,12 @@ const DEFAULT_CONFIG = {
 };
 
 const DEFAULT_UI_STATE = {
+  workMode: 'video',
   activeProjectId: 1,
   orientation: 'portrait',
   duration: '15s',
   modelFamily: 'sora2',
+  imageModel: 'gpt-image',
   generationType: 'image',
   recordsScope: 'project',
   batchMode: 'script',
@@ -130,13 +151,17 @@ const getInitialUiState = () => {
     'prompt-enhance-medium',
     'prompt-enhance-long',
   ]);
+  const allowedWorkModes = new Set(['video', 'image']);
+  const allowedImageModels = new Set(['gpt-image', 'gpt-image-landscape', 'gpt-image-portrait']);
 
   return {
     ...DEFAULT_UI_STATE,
+    workMode: (typeof saved.workMode === 'string' && allowedWorkModes.has(saved.workMode)) ? saved.workMode : DEFAULT_UI_STATE.workMode,
     activeProjectId,
     orientation: saved.orientation === 'landscape' || saved.orientation === 'portrait' ? saved.orientation : DEFAULT_UI_STATE.orientation,
     duration: saved.duration === '10s' || saved.duration === '15s' ? saved.duration : DEFAULT_UI_STATE.duration,
     modelFamily: (typeof saved.modelFamily === 'string' && allowedModelFamilies.has(saved.modelFamily)) ? saved.modelFamily : DEFAULT_UI_STATE.modelFamily,
+    imageModel: (typeof saved.imageModel === 'string' && allowedImageModels.has(saved.imageModel)) ? saved.imageModel : DEFAULT_UI_STATE.imageModel,
     generationType: saved.generationType === 'text' || saved.generationType === 'image' ? saved.generationType : DEFAULT_UI_STATE.generationType,
     recordsScope: saved.recordsScope === 'all' ? 'all' : DEFAULT_UI_STATE.recordsScope,
     batchMode: saved.batchMode === 'repeat' || saved.batchMode === 'script' ? saved.batchMode : DEFAULT_UI_STATE.batchMode,
@@ -257,6 +282,81 @@ const idbDeleteProjectImage = async (projectId) => {
   });
 };
 
+let taskOutputsDbPromise = null;
+const getTaskOutputsDb = () => {
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  if (taskOutputsDbPromise) return taskOutputsDbPromise;
+
+  taskOutputsDbPromise = new Promise((resolve) => {
+    try {
+      const request = indexedDB.open(TASK_OUTPUTS_DB.name, TASK_OUTPUTS_DB.version);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(TASK_OUTPUTS_DB.store)) {
+          db.createObjectStore(TASK_OUTPUTS_DB.store);
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+    } catch (e) {
+      resolve(null);
+    }
+  });
+
+  return taskOutputsDbPromise;
+};
+
+const idbGetTaskOutput = async (taskId) => {
+  const db = await getTaskOutputsDb();
+  if (!db) return null;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(TASK_OUTPUTS_DB.store, 'readonly');
+      const store = tx.objectStore(TASK_OUTPUTS_DB.store);
+      const req = store.get(String(taskId));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch (e) {
+      resolve(null);
+    }
+  });
+};
+
+const idbSetTaskOutput = async (taskId, dataUrl) => {
+  const db = await getTaskOutputsDb();
+  if (!db) return false;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(TASK_OUTPUTS_DB.store, 'readwrite');
+      const store = tx.objectStore(TASK_OUTPUTS_DB.store);
+      store.put({ dataUrl: String(dataUrl), updatedAt: Date.now() }, String(taskId));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch (e) {
+      resolve(false);
+    }
+  });
+};
+
+const idbDeleteTaskOutput = async (taskId) => {
+  const db = await getTaskOutputsDb();
+  if (!db) return false;
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(TASK_OUTPUTS_DB.store, 'readwrite');
+      const store = tx.objectStore(TASK_OUTPUTS_DB.store);
+      store.delete(String(taskId));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch (e) {
+      resolve(false);
+    }
+  });
+};
+
 const normalizeLoadedTask = (input) => {
   if (!input || typeof input !== 'object') return null;
 
@@ -267,6 +367,9 @@ const normalizeLoadedTask = (input) => {
   const status = typeof input.status === 'string' ? input.status : 'FAILED';
   const progressRaw = typeof input.progress === 'number' ? input.progress : parseInt(input.progress, 10);
   const progress = Number.isFinite(progressRaw) ? Math.max(0, Math.min(100, progressRaw)) : 0;
+  const mediaType = input.mediaType === 'image' ? 'image' : 'video';
+  const rawGenerationType = typeof input.generationType === 'string' ? input.generationType : null;
+  const generationType = rawGenerationType === 'text' || rawGenerationType === 'image' ? rawGenerationType : 'image';
 
   const normalized = {
     id: input.id ?? (Date.now() + Math.random()),
@@ -274,16 +377,19 @@ const normalizeLoadedTask = (input) => {
     projectName: input.projectName ? String(input.projectName) : '',
     prompt: input.prompt ? String(input.prompt) : '',
     scriptSnippet: input.scriptSnippet ? String(input.scriptSnippet) : '',
+    mediaType,
     status,
     stage: input.stage ? String(input.stage) : '',
     progress,
     videoUrl: input.videoUrl ? String(input.videoUrl) : null,
+    imageUrl: input.imageUrl ? String(input.imageUrl) : null,
+    imageStored: Boolean(input.imageStored),
     errorMessage: input.errorMessage ? String(input.errorMessage) : null,
     streamLog: input.streamLog ? String(input.streamLog) : '',
     warning: input.warning ? String(input.warning) : null,
     timestamp: input.timestamp ? String(input.timestamp) : new Date().toLocaleString(),
     modelUsed: input.modelUsed ? String(input.modelUsed) : undefined,
-    generationType: input.generationType ? String(input.generationType) : 'image',
+    generationType,
     image: null,
   };
 
@@ -295,11 +401,18 @@ const normalizeLoadedTask = (input) => {
     normalized.errorMessage = normalized.errorMessage || '任务在上次运行中被中断（未完成）。';
   }
 
-  if (normalized.status === 'COMPLETED' && !normalized.videoUrl) {
+  if (normalized.status === 'COMPLETED' && normalized.mediaType === 'video' && !normalized.videoUrl) {
     normalized.status = 'FAILED';
     normalized.stage = '无视频链接';
     normalized.progress = 0;
     normalized.errorMessage = normalized.errorMessage || '记录缺少 videoUrl，无法播放或下载。';
+  }
+
+  if (normalized.status === 'COMPLETED' && normalized.mediaType === 'image' && !normalized.imageUrl && !normalized.imageStored) {
+    normalized.status = 'FAILED';
+    normalized.stage = 'No image result';
+    normalized.progress = 0;
+    normalized.errorMessage = normalized.errorMessage || 'Record missing imageUrl; cannot preview or download.';
   }
 
   return normalized;
@@ -332,13 +445,17 @@ export default function App() {
   const [editName, setEditName] = useState('');
 
   // --- 当前项目输入状态 ---
+  const [workMode, setWorkMode] = useState(() => initialUiState.workMode);
   const [activeProject, setActiveProject] = useState(() => projects.find(p => p.id === initialUiState.activeProjectId) || projects[0]);
   const [orientation, setOrientation] = useState(() => initialUiState.orientation);
   const [duration, setDuration] = useState(() => initialUiState.duration);
   const [modelFamily, setModelFamily] = useState(() => initialUiState.modelFamily);
-  const selectedModelName = modelFamily.startsWith('prompt-enhance')
+  const [imageModel, setImageModel] = useState(() => initialUiState.imageModel);
+  const selectedVideoModelName = modelFamily.startsWith('prompt-enhance')
       ? `${modelFamily}-${duration}`
       : `${modelFamily}-${orientation}-${duration}`;
+  const selectedImageModelName = imageModel;
+  const selectedModelName = workMode === 'image' ? selectedImageModelName : selectedVideoModelName;
   const [generationType, setGenerationType] = useState(() => initialUiState.generationType); 
   const [recordsScope, setRecordsScope] = useState(() => initialUiState.recordsScope || 'project');
 
@@ -359,9 +476,17 @@ export default function App() {
   const [activeTooltip, setActiveTooltip] = useState(null);
   const [toastVisible, setToastVisible] = useState(false);
   const [activeVideoTaskId, setActiveVideoTaskId] = useState(null);
+  const [activeImageTaskId, setActiveImageTaskId] = useState(null);
+  const [composerText, setComposerText] = useState('');
+  const [composerImage, setComposerImage] = useState(null);
+  const [composerImageName, setComposerImageName] = useState('');
 
   // --- 调度器状态 ---
   const logsEndRef = useRef(null);
+  const chatScrollRef = useRef(null);
+  const chatEndRef = useRef(null);
+  const composerFileInputRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
   const batchInputRef = useRef(null);
   const lastTaskStartTime = useRef(0);
   const [tick, setTick] = useState(0);
@@ -386,7 +511,7 @@ export default function App() {
 
   useEffect(() => {
     const checkConnection = () => {
-        if (window.electronAPI && typeof window.electronAPI.downloadVideo === 'function') {
+        if (window.electronAPI && (typeof window.electronAPI.downloadFile === 'function' || typeof window.electronAPI.downloadVideo === 'function')) {
             addLog("系统: 原生模块已成功连接。", "success");
         } else {
             addLog("系统: 未检测到原生模块，功能受限 (网页模式)。", "error");
@@ -417,23 +542,32 @@ export default function App() {
     if (persistQueueTimer.current) clearTimeout(persistQueueTimer.current);
     persistQueueTimer.current = setTimeout(() => {
       try {
-        const tasksToSave = queue.slice(0, MAX_SAVED_TASKS).map((t) => ({
-          id: t.id,
-          projectId: t.projectId,
-          projectName: t.projectName,
-          prompt: t.prompt,
-          scriptSnippet: t.scriptSnippet,
-          status: t.status,
-          stage: t.stage,
-          progress: t.progress,
-          videoUrl: t.videoUrl,
-          errorMessage: t.errorMessage,
-          streamLog: t.streamLog ? String(t.streamLog).slice(-1000) : '',
-          warning: t.warning,
-          timestamp: t.timestamp,
-          modelUsed: t.modelUsed,
-          generationType: t.generationType,
-        }));
+        const tasksToSave = queue.slice(0, MAX_SAVED_TASKS).map((t) => {
+          const rawImageUrl = t.imageUrl ? String(t.imageUrl) : null;
+          const safeImageUrl = rawImageUrl && !rawImageUrl.startsWith('data:') ? rawImageUrl : null;
+          const imageStored = Boolean(t.imageStored) || (rawImageUrl && rawImageUrl.startsWith('data:'));
+
+          return {
+            id: t.id,
+            projectId: t.projectId,
+            projectName: t.projectName,
+            prompt: t.prompt,
+            scriptSnippet: t.scriptSnippet,
+            mediaType: t.mediaType,
+            status: t.status,
+            stage: t.stage,
+            progress: t.progress,
+            videoUrl: t.videoUrl,
+            imageUrl: safeImageUrl,
+            imageStored,
+            errorMessage: t.errorMessage,
+            streamLog: t.streamLog ? String(t.streamLog).slice(-1000) : '',
+            warning: t.warning,
+            timestamp: t.timestamp,
+            modelUsed: t.modelUsed,
+            generationType: t.generationType,
+          };
+        });
         window.localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(tasksToSave));
       } catch (e) { }
     }, 1000);
@@ -472,10 +606,12 @@ export default function App() {
     persistUiTimer.current = setTimeout(() => {
       try {
         const uiState = {
+          workMode,
           activeProjectId,
           orientation,
           duration,
           modelFamily,
+          imageModel,
           generationType,
           recordsScope,
           batchMode,
@@ -488,7 +624,7 @@ export default function App() {
     return () => {
       if (persistUiTimer.current) clearTimeout(persistUiTimer.current);
     };
-  }, [activeProjectId, orientation, duration, modelFamily, generationType, recordsScope, batchMode, repeatCount]);
+  }, [workMode, activeProjectId, orientation, duration, modelFamily, imageModel, generationType, recordsScope, batchMode, repeatCount]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.localStorage) return;
@@ -544,6 +680,33 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const hydrateTaskOutputs = async () => {
+      const snapshot = Array.isArray(queue) ? queue : [];
+      for (const task of snapshot) {
+        if (cancelled) return;
+        if (!task?.id) continue;
+        if (task.mediaType !== 'image') continue;
+        if (task.status !== 'COMPLETED') continue;
+        if (task.imageUrl) continue;
+        if (!task.imageStored) continue;
+
+        const record = await idbGetTaskOutput(task.id);
+        if (cancelled) return;
+
+        const dataUrl = record?.dataUrl;
+        if (typeof dataUrl === 'string' && dataUrl.startsWith('data:')) {
+          setQueue(prev => prev.map(t => t.id === task.id ? { ...t, imageUrl: dataUrl } : t));
+        }
+      }
+    };
+
+    hydrateTaskOutputs();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
     const runningCount = queue.filter(t => t.status === 'GENERATING' || t.status === 'STARTING' || t.status === 'PROCESSING' || t.status === 'CACHING').length;
     const pendingTasks = queue.filter(t => t.status === 'PENDING');
 
@@ -562,7 +725,7 @@ export default function App() {
         if (nextTask) {
             lastTaskStartTime.current = Date.now();
             updateTask(nextTask.id, { status: 'STARTING', stage: '准备发射' });
-            processTask(nextTask.id, nextTask.prompt, nextTask.image, nextTask.generationType, nextTask.modelUsed);
+            processTask(nextTask.id, nextTask.prompt, nextTask.image, nextTask.generationType, nextTask.modelUsed, nextTask.mediaType);
         }
     }
   }, [queue, config.maxConcurrent, config.taskInterval, tick]);
@@ -588,6 +751,11 @@ export default function App() {
   useEffect(() => {
     logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logs]);
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) return;
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [queue, recordsScope, activeProjectId]);
 
   useEffect(() => {
       if (showBatchModal && batchMode === 'script') {
@@ -617,7 +785,7 @@ export default function App() {
     }
     const cmd = `curl -X POST "${config.baseUrl}" \\\n  -H "Authorization: Bearer ${config.apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(previewJson, null, 2)}'`;
     setCurlPreview(cmd);
-  }, [config, activeProject, selectedModelName, generationType]);
+  }, [config, activeProject, selectedModelName, generationType, workMode]);
 
   // --- 处理器 ---
 
@@ -681,7 +849,8 @@ export default function App() {
 
   const handleOpenBatchModal = () => {
       if (generationType === 'image' && !activeProject.image) {
-          addLog("错误: 图生视频模式下必须上传项目图片。", 'error');
+          const typeLabel = workMode === 'video' ? '图生视频' : '图生图';
+          addLog(`错误: ${typeLabel} 模式下必须上传项目图片。`, 'error');
           return;
       }
       setShowBatchModal(true);
@@ -710,27 +879,97 @@ export default function App() {
       if (batchMode === 'script') setBatchScripts(['']);
   };
   
-  const addToQueue = (prompt, scriptSnippet) => {
+  const addToQueue = (prompt, scriptSnippet, overrides = {}) => {
+      const taskMediaType = overrides.mediaType === 'image' ? 'image' : (overrides.mediaType === 'video' ? 'video' : workMode);
+      const taskGenerationType = overrides.generationType === 'text' ? 'text' : (overrides.generationType === 'image' ? 'image' : generationType);
+      const taskImage = Object.prototype.hasOwnProperty.call(overrides, 'image') ? overrides.image : activeProject?.image;
+      const taskModelUsed = typeof overrides.modelUsed === 'string' && overrides.modelUsed
+          ? overrides.modelUsed
+          : (taskMediaType === 'image' ? selectedImageModelName : selectedVideoModelName);
+
+      const trimmedPrompt = String(prompt || '').trim();
+      if (!trimmedPrompt) {
+          addLog('错误: 提示词不能为空。', 'error');
+          return;
+      }
+      if (taskGenerationType === 'image' && !taskImage) {
+          const typeLabel = taskMediaType === 'image' ? '图生图' : '图生视频';
+          addLog(`错误: ${typeLabel} 模式下必须附带输入图片。`, 'error');
+          return;
+      }
+
       const newTaskId = Date.now() + Math.random(); 
       const newTask = {
           id: newTaskId,
           projectId: activeProjectId,
-          projectName: activeProject.name,
-          prompt: String(prompt),
-          scriptSnippet: String(scriptSnippet), 
+          projectName: activeProject?.name,
+          prompt: trimmedPrompt,
+          mediaType: taskMediaType,
+          scriptSnippet: String(scriptSnippet || ''), 
           status: 'PENDING',
           stage: '等待中',
           progress: 0,
           videoUrl: null,
+          imageUrl: null,
+          imageStored: false,
           errorMessage: null,
           streamLog: '', 
-           warning: null, 
-           timestamp: new Date().toLocaleString(),
-           modelUsed: selectedModelName,
-           image: activeProject.image,
-           generationType: generationType, 
+          warning: null, 
+          timestamp: new Date().toLocaleString(),
+          modelUsed: taskModelUsed,
+          image: taskGenerationType === 'image' ? taskImage : null,
+          generationType: taskGenerationType, 
        };
       setQueue(prev => [newTask, ...prev]);
+  };
+
+  const handleComposerAttachment = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : null;
+      if (!dataUrl) return;
+      setComposerImage(dataUrl);
+      setComposerImageName(file.name || '');
+      shouldAutoScrollRef.current = true;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearComposerAttachment = () => {
+    setComposerImage(null);
+    setComposerImageName('');
+    if (composerFileInputRef.current) {
+      composerFileInputRef.current.value = '';
+    }
+  };
+
+  const sendComposerMessage = () => {
+    const prompt = String(composerText || '').trim();
+    const hasImage = Boolean(composerImage);
+    addToQueue(prompt, '', {
+      mediaType: workMode,
+      generationType: hasImage ? 'image' : 'text',
+      image: hasImage ? composerImage : null,
+      modelUsed: workMode === 'image' ? selectedImageModelName : selectedVideoModelName,
+    });
+
+    setComposerText('');
+    clearComposerAttachment();
+    shouldAutoScrollRef.current = true;
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 0);
+  };
+
+  const handleAddSingleTask = () => {
+    const prompt = String(activeProject?.prompt || '').trim();
+    addToQueue(prompt, '', {
+      mediaType: workMode,
+      generationType: generationType,
+      image: activeProject?.image,
+      modelUsed: workMode === 'image' ? selectedImageModelName : selectedVideoModelName,
+    });
   };
 
   const addLog = (msg, type = 'info') => {
@@ -750,14 +989,48 @@ export default function App() {
       return name || 'sora_video';
   };
 
-  const triggerDownload = (url, taskId, suggestedBaseName) => {
+  const triggerDownload = (url, taskId, suggestedBaseName, fallbackExtension) => {
     if (!url) return;
 
     const safeTaskId = String(taskId ?? '').replace(/[^0-9a-zA-Z_-]/g, '_');
+    const guessExtension = (value) => {
+      const str = String(value || '');
+      if (str.startsWith('data:')) {
+        const mimeMatch = str.match(/^data:([^;,]+)[;,]/);
+        const mime = mimeMatch ? mimeMatch[1] : '';
+        const map = {
+          'image/png': '.png',
+          'image/jpeg': '.jpg',
+          'image/webp': '.webp',
+          'image/gif': '.gif',
+          'video/mp4': '.mp4',
+        };
+        if (map[mime]) return map[mime];
+      }
+
+      try {
+        const u = new URL(str);
+        const pathname = u.pathname || '';
+        const extMatch = pathname.match(/\.([a-zA-Z0-9]{1,6})$/);
+        if (extMatch) return `.${extMatch[1].toLowerCase()}`;
+      } catch (e) { }
+
+      return '';
+    };
+
+    let extension = guessExtension(url);
+    if (!extension && typeof fallbackExtension === 'string' && fallbackExtension.trim()) {
+      extension = fallbackExtension.trim();
+    }
+    if (extension && !extension.startsWith('.')) extension = `.${extension}`;
+    if (!extension) extension = '.bin';
     const baseName = suggestedBaseName ? toSafeFilename(suggestedBaseName) : `sora_task_${safeTaskId || 'unknown'}`;
-    const filename = baseName.toLowerCase().endsWith('.mp4') ? baseName : `${baseName}.mp4`;
-    if (window.electronAPI && typeof window.electronAPI.downloadVideo === 'function') {
-        window.electronAPI.downloadVideo(url, filename);
+    const filename = baseName.toLowerCase().endsWith(extension.toLowerCase()) ? baseName : `${baseName}${extension}`;
+    const downloader = window.electronAPI && (typeof window.electronAPI.downloadFile === 'function'
+        ? window.electronAPI.downloadFile
+        : (typeof window.electronAPI.downloadVideo === 'function' ? window.electronAPI.downloadVideo : null));
+    if (typeof downloader === 'function') {
+        downloader(url, filename);
         addLog(`[任务 ${taskId}] 已触发原生下载。`, 'success');
         return;
     }
@@ -777,8 +1050,180 @@ export default function App() {
     }
   };
 
-  const processTask = async (taskId, taskPrompt, taskImage, taskType, taskModel) => {
+  const processTask = async (taskId, taskPrompt, taskImage, taskType, taskModel, taskMediaType) => {
       updateTask(taskId, { status: 'GENERATING', stage: '初始化中', progress: 0 });
+      if (taskMediaType === 'image') {
+          await (async () => {
+              let hasReceivedData = false;
+              let hasResolvedImage = false;
+
+              const extractImageFromText = (value) => {
+                  const str = String(value || '');
+                  if (!str) return null;
+
+                  const dataUrlMatch = str.match(/data:image\/[a-zA-Z0-9+.-]+;base64,[a-zA-Z0-9+/=]+/);
+                  if (dataUrlMatch) return dataUrlMatch[0];
+
+                  const srcMatch = str.match(/src=['"]([^'"]+?)['"]/i);
+                  if (srcMatch && srcMatch[1]) return srcMatch[1];
+
+                  const markdownImageMatch = str.match(/!\[[^\]]*]\(([^)\s]+)\)/);
+                  if (markdownImageMatch && markdownImageMatch[1]) return markdownImageMatch[1];
+
+                  const urlMatch = str.match(/(https?:\/\/[^\s"')\]]+)/);
+                  if (urlMatch) return urlMatch[1] || urlMatch[0];
+
+                  return null;
+              };
+
+              const finishWithDataUrl = async (dataUrl) => {
+                  await idbSetTaskOutput(taskId, dataUrl);
+                  updateTask(taskId, { status: 'COMPLETED', stage: 'Done', progress: 100, imageUrl: dataUrl, imageStored: true, streamLog: '[image:data]' });
+              };
+
+              const finishWithUrl = async (url) => {
+                  await idbDeleteTaskOutput(taskId);
+                  updateTask(taskId, { status: 'COMPLETED', stage: 'Done', progress: 100, imageUrl: url, imageStored: false, streamLog: url });
+              };
+
+              const completeFromCandidate = async (candidate) => {
+                  const str = String(candidate || '').trim();
+                  if (!str) return false;
+                  if (str.startsWith('data:image/')) {
+                      await finishWithDataUrl(str);
+                      return true;
+                  }
+                  if (str.startsWith('http://') || str.startsWith('https://')) {
+                      await finishWithUrl(str);
+                      return true;
+                  }
+                  return false;
+              };
+
+              try {
+                  if (!config?.baseUrl) throw new Error('Missing /v1/chat/completions endpoint');
+                  if (taskType !== 'text' && !taskImage) throw new Error('Missing input image');
+
+                  updateTask(taskId, { stage: 'Requesting', progress: 10 });
+
+                  const content = taskType === 'text'
+                      ? String(taskPrompt || '')
+                      : [{ type: "text", text: String(taskPrompt || '') }, { type: "image_url", image_url: { url: taskImage } }];
+                  const payload = { model: String(taskModel || 'gpt-image'), messages: [{ role: "user", content: content }], stream: true };
+                  const response = await fetch(config.baseUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` },
+                      body: JSON.stringify(payload)
+                  });
+
+                  if (!response.ok) {
+                      let errorMsg = `HTTP ${response.status}`;
+                      try { const errorText = await response.text(); if (errorText) errorMsg = errorText; } catch (e) { }
+                      throw new Error(errorMsg);
+                  }
+
+                  const contentType = String(response.headers.get('content-type') || '');
+                  if (contentType.includes('text/event-stream') && response.body) {
+                      const reader = response.body.getReader();
+                      const decoder = new TextDecoder();
+                      let buffer = '';
+                      let accumulatedContent = '';
+
+                      while (true) {
+                          const { done, value } = await reader.read();
+                          if (done) break;
+
+                          buffer += decoder.decode(value, { stream: true });
+                          const lines = buffer.split('\n');
+                          buffer = lines.pop();
+
+                          for (const line of lines) {
+                              const trimmed = line.trim();
+                              if (!trimmed) continue;
+                              if (trimmed === 'data: [DONE]' || trimmed === 'data:[DONE]') continue;
+                              if (!trimmed.startsWith('data:')) continue;
+
+                              const jsonStr = trimmed.replace(/^data:\s?/, '');
+                              let combinedChunk = '';
+                              try {
+                                  const data = JSON.parse(jsonStr);
+                                  if (data.error) throw new Error(data.error.message || 'API Error');
+                                  const delta = data.choices?.[0]?.delta;
+                                  combinedChunk = String((delta?.content || '') + (delta?.reasoning_content || ''));
+                              } catch (e) {
+                                  combinedChunk = jsonStr;
+                              }
+
+                              if (!combinedChunk) continue;
+                              if (hasResolvedImage) continue;
+
+                              hasReceivedData = true;
+                              accumulatedContent += combinedChunk;
+                              if (accumulatedContent.length > 50_000) accumulatedContent = accumulatedContent.slice(-50_000);
+
+                              updateTask(taskId, { stage: 'Generating', progress: 50, streamLog: accumulatedContent.length > 1000 ? '...' + accumulatedContent.slice(-1000) : accumulatedContent });
+
+                              const candidate = extractImageFromText(combinedChunk) || extractImageFromText(accumulatedContent);
+                              if (candidate && await completeFromCandidate(candidate)) {
+                                  hasResolvedImage = true;
+                                  try { await reader.cancel(); } catch (e) { }
+                                  return;
+                              }
+                          }
+                      }
+
+                      const finalCandidate = extractImageFromText(buffer) || extractImageFromText(accumulatedContent);
+                      if (finalCandidate && await completeFromCandidate(finalCandidate)) return;
+
+                      throw new Error('No image in response');
+                  }
+
+                  const result = await response.json();
+                  if (result?.error) throw new Error(result.error.message || 'API Error');
+
+                  const first = Array.isArray(result?.data) ? result.data[0] : null;
+                  const url = first && typeof first.url === 'string' ? first.url : null;
+                  const b64 = first && typeof first.b64_json === 'string' ? first.b64_json : null;
+
+                  if (b64) {
+                      const dataUrl = `data:image/png;base64,${b64}`;
+                      await finishWithDataUrl(dataUrl);
+                      return;
+                  }
+
+                  if (url) {
+                      await finishWithUrl(url);
+                      return;
+                  }
+
+                  const messageContent = result?.choices?.[0]?.message?.content;
+                  let messageText = '';
+                  if (Array.isArray(messageContent)) {
+                      messageText = messageContent.map((part) => {
+                          if (!part) return '';
+                          if (typeof part === 'string') return part;
+                          if (typeof part.text === 'string') return part.text;
+                          const url = part.image_url?.url;
+                          return typeof url === 'string' ? url : '';
+                      }).join('\\n');
+                  } else if (typeof messageContent === 'string') {
+                      messageText = messageContent;
+                  } else if (messageContent != null) {
+                      messageText = String(messageContent);
+                  }
+
+                  const candidate = extractImageFromText(messageText) || extractImageFromText(JSON.stringify(result));
+                  if (candidate && await completeFromCandidate(candidate)) return;
+
+                  throw new Error('No image in response');
+              } catch (err) {
+                  addLog(`[Task ${taskId}] Image error: ${err.message}`, 'error');
+                  updateTask(taskId, { status: 'FAILED', stage: hasReceivedData ? 'ERROR' : 'NETWORK', progress: 0, errorMessage: err.message });
+              }
+          })();
+          return;
+      }
+
       let hasReceivedData = false;
       let hasResolvedVideo = false;
 
@@ -880,9 +1325,9 @@ export default function App() {
                               if (foundUrl && !hasResolvedVideo) {
                                   hasResolvedVideo = true;
                                   updateTask(taskId, { status: 'COMPLETED', stage: '已完成', progress: 100, videoUrl: foundUrl });
-                                  if (window.electronAPI && typeof window.electronAPI.downloadVideo === 'function') {
-                                      triggerDownload(foundUrl, taskId);
-                                  }
+                                   if (window.electronAPI && (typeof window.electronAPI.downloadFile === 'function' || typeof window.electronAPI.downloadVideo === 'function')) {
+                                       triggerDownload(foundUrl, taskId, undefined, '.mp4');
+                                   }
                                   try { await reader.cancel(); } catch (e) { }
                                   return;
                               }
@@ -902,17 +1347,239 @@ export default function App() {
       }
   };
 
-  const visibleQueue = recordsScope === 'all'
+  const visibleQueue = (recordsScope === 'all'
       ? queue
-      : queue.filter(t => t.projectId === activeProjectId);
+      : queue.filter(t => t.projectId === activeProjectId)
+  ).filter(t => (t.mediaType || 'video') === workMode);
+
+  const orderedVisibleQueue = workMode === 'image' ? [...visibleQueue].reverse() : visibleQueue;
+  const getTaskKindLabel = (task) => {
+      const mediaType = (task?.mediaType || 'video') === 'image' ? 'image' : 'video';
+      const generationType = task?.generationType === 'text' ? 'text' : 'image';
+
+      if (mediaType === 'image') return generationType === 'text' ? '文生图' : '图生图';
+      return generationType === 'text' ? '文生视频' : '图生视频';
+  };
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-900 font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden relative">
+      {workMode === 'image' && (
+        <>
+          <header className="h-16 border-b border-gray-200 bg-white flex items-center justify-between px-6 z-10 shrink-0 shadow-sm">
+              <div className="flex items-center gap-6">
+                  <h1 className="text-gray-900 font-bold text-lg tracking-wide flex items-center gap-2">
+                    <div className="w-3 h-3 bg-blue-600 rounded-full"></div> Sora 视频生成
+                  </h1>
+                  <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+                      <button onClick={() => setWorkMode('video')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${workMode === 'video' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Video</button>
+                      <button onClick={() => setWorkMode('image')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${workMode === 'image' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Image</button>
+                  </div>
+              </div>
+              <div className="flex items-center gap-3">
+                  <button onClick={() => setShowDebug(!showDebug)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-mono rounded-md transition-colors ${showDebug ? 'bg-gray-100 text-green-600' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'}`}><IconTerminal size={14} /> 日志</button>
+                  <button onClick={() => setShowSettings(true)} className="p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors" title="设置"><IconSettings size={20} /></button>
+              </div>
+          </header>
+
+          <div className="flex flex-1 overflow-hidden">
+            <aside className="w-64 border-r border-gray-200 bg-gray-50 flex flex-col shrink-0">
+                <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+                    <h2 className="text-gray-700 font-bold tracking-wide flex items-center gap-2 text-sm uppercase">项目列表</h2>
+                    <button onClick={handleCreateProject} className="text-gray-500 hover:text-blue-600 transition-colors bg-white border border-gray-200 p-1 rounded shadow-sm hover:shadow"><IconPlus size={16} /></button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {projects.map(proj => (
+                        <div key={proj.id} onClick={() => setActiveProjectId(proj.id)} className={`group flex items-center gap-3 px-3 py-3 rounded-lg cursor-pointer transition-colors border ${activeProjectId === proj.id ? 'bg-white border-gray-200 shadow-sm text-blue-600' : 'border-transparent text-gray-600 hover:bg-gray-100'}`}>
+                            <IconFolder size={16} className={activeProjectId === proj.id ? 'text-blue-400' : 'text-gray-600'} />
+                            {editingProjectId === proj.id ? (
+                                <input autoFocus value={editName} onChange={(e) => setEditName(e.target.value)} onBlur={saveRename} onKeyDown={(e) => e.key === 'Enter' && !(e.isComposing || e.nativeEvent.isComposing) && saveRename()} className="bg-white border border-blue-500 rounded px-1 py-0.5 text-xs text-gray-900 w-full outline-none" />
+                            ) : (
+                                <span className="text-sm font-medium truncate flex-1">{String(proj.name || '')}</span>
+                            )}
+                            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <button onClick={(e) => startRenaming(e, proj)} className="p-1 text-gray-400 hover:text-blue-600 hover:bg-white rounded"><IconEdit size={12} /></button>
+                                <button onClick={(e) => handleDeleteProject(e, proj.id)} className="p-1 text-gray-400 hover:text-red-500 hover:bg-white rounded"><IconTrash size={12} /></button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </aside>
+
+            <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative bg-white">
+          <div
+            ref={chatScrollRef}
+            className="flex-1 overflow-y-auto"
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+              shouldAutoScrollRef.current = distanceToBottom < 120;
+            }}
+          >
+            <div className="mx-auto w-full max-w-3xl px-4 py-6 space-y-6">
+              {orderedVisibleQueue.length === 0 ? (
+                <div className="py-24 text-center text-sm text-gray-400">
+                  暂无对话记录，发送一条消息开始生成。
+                </div>
+              ) : (
+                orderedVisibleQueue.map((task) => {
+                  const kindLabel = getTaskKindLabel(task);
+                  const headerLeft = (recordsScope === 'all'
+                    ? [task.projectName, task.timestamp].filter(Boolean).join(' · ')
+                    : task.timestamp
+                  );
+                  const taskMediaType = task?.mediaType === 'image' ? 'image' : 'video';
+                  const isGenerating = task.status === 'GENERATING' || task.status === 'STARTING' || task.status === 'PROCESSING' || task.status === 'CACHING';
+                  const userBubbleColor = taskMediaType === 'image' ? 'bg-emerald-600' : 'bg-blue-600';
+                  const loaderColor = taskMediaType === 'image' ? 'text-emerald-600' : 'text-blue-600';
+
+                  return (
+                    <div key={task.id} className="space-y-2">
+                      <div className="flex justify-end">
+                        <div className={`max-w-[92%] rounded-2xl px-4 py-3 text-white shadow-sm ${userBubbleColor}`}>
+                          <div className="flex items-center justify-between gap-3 mb-1 text-[10px] text-white/80">
+                            <span className="truncate">{String(headerLeft || '')}</span>
+                            <span className="shrink-0 rounded-full bg-white/15 px-2 py-0.5 font-bold">{String(kindLabel)}</span>
+                          </div>
+                          <div className="whitespace-pre-wrap text-sm leading-relaxed">{String(task.prompt || '')}</div>
+                          {task.generationType !== 'text' && task.image && (
+                            <div className="mt-3">
+                              <img
+                                src={String(task.image)}
+                                alt="input"
+                                className="max-h-48 w-full rounded-lg border border-white/20 object-contain bg-black/20"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex justify-start">
+                        <div className="max-w-[92%] rounded-2xl px-4 py-3 bg-white border border-gray-200 shadow-sm">
+                          <div className="flex items-center justify-between gap-3 mb-2">
+                            <div className="text-[10px] text-gray-500 font-mono truncate">{String(task.modelUsed || '')}</div>
+                            <StatusBadge status={task.status} stage={task.stage} progress={task.progress} warning={task.warning} />
+                          </div>
+
+                          {task.status === 'COMPLETED' && taskMediaType === 'image' && task.imageUrl ? (
+                            <div className="space-y-2">
+                              <img
+                                src={String(task.imageUrl)}
+                                alt="result"
+                                className="max-h-[560px] w-full rounded-lg border border-gray-200 object-contain bg-black cursor-pointer"
+                                onClick={() => setActiveImageTaskId(task.id)}
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button onClick={() => setActiveImageTaskId(task.id)} className="px-3 py-1.5 text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800">Preview</button>
+                                <button onClick={() => triggerDownload(task.imageUrl, task.id, `${task.projectName || 'image_task'}_${task.id}`, '.png')} className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">下载</button>
+                                <button onClick={() => handleCopy(String(task.imageUrl))} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">复制</button>
+                              </div>
+                            </div>
+                          ) : task.status === 'FAILED' ? (
+                            <div className="text-sm text-red-600 whitespace-pre-wrap cursor-pointer" onClick={() => handleCopy(String(task.errorMessage || ''))}>
+                              {String(task.errorMessage || 'FAILED')}
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 text-sm text-gray-600">
+                              {isGenerating && <IconLoader className={loaderColor} />}
+                              <span>{String(task.stage || task.status || '')}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+              <div ref={chatEndRef} />
+            </div>
+          </div>
+
+          <div className="border-t border-gray-200 bg-white shrink-0">
+            <div className="mx-auto w-full max-w-3xl px-4 py-3">
+              {composerImage && (
+                <div className="mb-2 flex items-center gap-3 rounded-2xl border border-gray-200 bg-gray-50 p-2">
+                  <img src={String(composerImage)} alt="attach" className="h-14 w-14 rounded-lg border border-gray-200 object-cover bg-white" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-semibold text-gray-700 truncate">{String(composerImageName || '已添加图片')}</div>
+                    <div className="text-[10px] text-gray-500 truncate">发送后将按「图生{workMode === 'image' ? '图' : '视频'}」处理</div>
+                  </div>
+                  <button onClick={clearComposerAttachment} className="p-2 text-gray-400 hover:text-gray-900 hover:bg-white rounded-full" title="移除图片">
+                    <IconX size={16} />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex items-end gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 shadow-sm">
+                <input ref={composerFileInputRef} type="file" accept="image/*" onChange={handleComposerAttachment} className="hidden" />
+                <button
+                  type="button"
+                  onClick={() => composerFileInputRef.current?.click()}
+                  className="shrink-0 w-10 h-10 rounded-full hover:bg-gray-100 text-gray-500 flex items-center justify-center transition-colors"
+                  title="添加图片"
+                >
+                  <IconImage size={18} />
+                </button>
+
+                <textarea
+                  value={String(composerText || '')}
+                  onChange={(e) => setComposerText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return;
+                    if (e.shiftKey) return;
+                    if (e.isComposing || e.nativeEvent?.isComposing) return;
+                    if (!String(composerText || '').trim()) return;
+                    e.preventDefault();
+                    sendComposerMessage();
+                  }}
+                  rows={1}
+                  placeholder="描述新图片…"
+                  className="flex-1 resize-none bg-transparent text-sm leading-relaxed text-gray-900 placeholder-gray-400 focus:outline-none max-h-32 py-2"
+                />
+
+                <button
+                  type="button"
+                  className="shrink-0 w-10 h-10 rounded-full hover:bg-gray-100 text-gray-500 flex items-center justify-center transition-colors"
+                  title="语音（暂未实现）"
+                >
+                  <IconMic size={18} />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={sendComposerMessage}
+                  disabled={!String(composerText || '').trim()}
+                  className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+                    !String(composerText || '').trim()
+                      ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                      : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                  }`}
+                  title="发送"
+                >
+                  <IconArrowUp size={18} />
+                </button>
+              </div>
+
+              <div className="pt-2 text-[10px] text-gray-400 text-center">
+                Enter 发送 · Shift+Enter 换行
+              </div>
+            </div>
+          </div>
+            </main>
+          </div>
+        </>
+      )}
+
+      {workMode === 'video' && (
+        <>
       <header className="h-16 border-b border-gray-200 bg-white flex items-center justify-between px-6 z-10 shrink-0 shadow-sm">
           <div className="flex items-center gap-6">
               <h1 className="text-gray-900 font-bold text-lg tracking-wide flex items-center gap-2">
                 <div className="w-3 h-3 bg-blue-600 rounded-full"></div> Sora 视频生成
               </h1>
+              <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+                  <button onClick={() => setWorkMode('video')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${workMode === 'video' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Video</button>
+                  <button onClick={() => setWorkMode('image')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${workMode === 'image' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Image</button>
+              </div>
           </div>
           <div className="flex items-center gap-3">
               <button onClick={() => setShowDebug(!showDebug)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-mono rounded-md transition-colors ${showDebug ? 'bg-gray-100 text-green-600' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'}`}><IconTerminal size={14} /> 日志</button>
@@ -953,8 +1620,8 @@ export default function App() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                         <div className="lg:col-span-8 flex flex-col gap-6">
                             <div className="flex items-center gap-2 mb-2">
-                                <button onClick={() => setGenerationType('image')} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${generationType === 'image' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconImage size={16} /> 图生视频</button>
-                                <button onClick={() => setGenerationType('text')} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${generationType === 'text' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconType size={16} /> 文生视频</button>
+                                <button onClick={() => setGenerationType('image')} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${generationType === 'image' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconImage size={16} /> {workMode === 'video' ? '图生视频' : '图生图'}</button>
+                                <button onClick={() => setGenerationType('text')} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${generationType === 'text' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconType size={16} /> {workMode === 'video' ? '文生视频' : '文生图'}</button>
                             </div>
                             <div className="space-y-2">
                                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex justify-between">总提示词 (Master Prompt)<span className="text-xs text-blue-600 normal-case bg-blue-50 px-2 py-0.5 rounded">使用 "这是台词文案" 作为占位符</span></label>
@@ -982,8 +1649,18 @@ export default function App() {
                                     </div>
                                 </div>
                             )}
+                            <div className="flex justify-end">
+                                <button
+                                    onClick={handleAddSingleTask}
+                                    className={`px-5 py-2.5 rounded-lg text-sm font-bold text-white shadow-sm transition-all ${workMode === 'image' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                >
+                                    {workMode === 'image' ? '发送' : '加入队列'}
+                                </button>
+                            </div>
                         </div>
                         <div className="lg:col-span-4 flex flex-col gap-6 bg-gray-50 p-6 rounded-xl border border-gray-100">
+                            {workMode === 'video' ? (
+                                <>
                             <div className="space-y-3">
                                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Model</label>
                                 <div className="grid grid-cols-2 gap-2">
@@ -1013,6 +1690,23 @@ export default function App() {
                                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
                                 <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedModelName)}</div>
                             </div>
+                                </>
+                            ) : (
+                                <>
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Image Model</label>
+                                        <div className="grid grid-cols-1 gap-2">
+                                            <button onClick={() => setImageModel('gpt-image')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${imageModel === 'gpt-image' ? 'bg-white border-emerald-500 text-emerald-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>gpt-image</button>
+                                            <button onClick={() => setImageModel('gpt-image-landscape')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${imageModel === 'gpt-image-landscape' ? 'bg-white border-emerald-500 text-emerald-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>gpt-image-landscape</button>
+                                            <button onClick={() => setImageModel('gpt-image-portrait')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${imageModel === 'gpt-image-portrait' ? 'bg-white border-emerald-500 text-emerald-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>gpt-image-portrait</button>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Current Model</label>
+                                        <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedModelName)}</div>
+                                    </div>
+                                </>
+                            )}
                             <div className="flex-1"></div>
                             <div className="flex bg-gray-100 p-1 rounded-lg mb-2">
                                 <button onClick={() => setBatchMode('script')} className={`flex-1 py-1.5 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-all ${batchMode === 'script' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><IconScript size={14} /> 台词模式</button>
@@ -1025,7 +1719,7 @@ export default function App() {
 
                 <section className="flex-1 pb-20">
                     <div className="flex items-center justify-between mb-4 px-1">
-                        <h2 className="text-lg font-bold text-gray-900">生产队列</h2>
+                        <h2 className="text-lg font-bold text-gray-900">{workMode === 'image' ? '对话' : '生产队列'}</h2>
                         <div className="flex items-center gap-3">
                             <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
                                 <button onClick={() => setRecordsScope('project')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${recordsScope === 'project' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>当前项目</button>
@@ -1035,6 +1729,75 @@ export default function App() {
                         </div>
                     </div>
                     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm min-h-[200px]">
+                        {workMode === 'image' && (
+                            <div className="p-4 bg-gray-50">
+                                {orderedVisibleQueue.length === 0 ? (
+                                    <div className="p-10 text-center text-sm text-gray-400">
+                                        暂无对话记录，发送一条消息开始生成图片。
+                                    </div>
+                                ) : (
+                                    <div className="space-y-6">
+                                        {orderedVisibleQueue.map((task) => {
+                                            const kindLabel = getTaskKindLabel(task);
+                                            const headerLeft = (recordsScope === 'all'
+                                                ? [task.projectName, task.timestamp].filter(Boolean).join(' · ')
+                                                : task.timestamp
+                                            );
+                                            const isGenerating = task.status === 'GENERATING' || task.status === 'STARTING' || task.status === 'PROCESSING' || task.status === 'CACHING';
+
+                                            return (
+                                                <div key={task.id} className="space-y-2">
+                                                    <div className="flex justify-end">
+                                                        <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-blue-600 text-white shadow-sm">
+                                                            <div className="flex items-center justify-between gap-3 mb-1 text-[10px] text-white/80">
+                                                                <span className="truncate">{String(headerLeft || '')}</span>
+                                                                <span className="shrink-0 bg-white/15 px-2 py-0.5 rounded font-mono">{kindLabel}</span>
+                                                            </div>
+                                                            <div className="whitespace-pre-wrap text-sm leading-relaxed">{String(task.prompt || '')}</div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex justify-start">
+                                                        <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-white border border-gray-200 shadow-sm">
+                                                            <div className="flex items-center justify-between gap-3 mb-2">
+                                                                <div className="text-[10px] text-gray-500 font-mono truncate">{String(task.modelUsed || '')}</div>
+                                                                <div className="text-[10px] text-gray-500 font-bold uppercase">{String(task.status || '')}</div>
+                                                            </div>
+
+                                                            {task.status === 'COMPLETED' && task.imageUrl ? (
+                                                                <div className="space-y-2">
+                                                                    <img
+                                                                        src={String(task.imageUrl)}
+                                                                        alt="result"
+                                                                        className="max-h-[520px] w-full rounded-lg border border-gray-200 object-contain bg-black cursor-pointer"
+                                                                        onClick={() => setActiveImageTaskId(task.id)}
+                                                                    />
+                                                                    <div className="flex flex-wrap gap-2">
+                                                                        <button onClick={() => setActiveImageTaskId(task.id)} className="px-3 py-1.5 text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800">Preview</button>
+                                                                        <button onClick={() => triggerDownload(task.imageUrl, task.id, `${task.projectName || 'image_task'}_${task.id}`, '.png')} className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700">下载</button>
+                                                                        <button onClick={() => handleCopy(String(task.imageUrl))} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">复制</button>
+                                                                    </div>
+                                                                </div>
+                                                            ) : task.status === 'FAILED' ? (
+                                                                <div className="text-sm text-red-600 whitespace-pre-wrap cursor-pointer" onClick={() => handleCopy(String(task.errorMessage || ''))}>
+                                                                    {String(task.errorMessage || 'FAILED')}
+                                                                </div>
+                                                            ) : (
+                                                                <div className="flex items-center gap-2 text-sm text-gray-600">
+                                                                    {isGenerating && <IconLoader className="text-emerald-600" />}
+                                                                    <span>{String(task.stage || task.status || '')}</span>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {workMode !== 'image' && (
                         <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse">
                                 <thead>
@@ -1049,14 +1812,21 @@ export default function App() {
                                         <tr key={task.id} className="group hover:bg-gray-50 transition-colors">
                                             <td className="p-4">
                                                 <div
-                                                    onClick={() => { if (task.status === 'COMPLETED' && task.videoUrl) setActiveVideoTaskId(task.id); }}
-                                                    className={`w-24 h-14 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden relative shadow-sm ${task.status === 'COMPLETED' && task.videoUrl ? 'cursor-pointer hover:border-blue-400' : ''}`}
+                                                    onClick={() => { if (task.status !== 'COMPLETED') return; if (task.mediaType === 'image' && task.imageUrl) setActiveImageTaskId(task.id); if ((task.mediaType || 'video') === 'video' && task.videoUrl) setActiveVideoTaskId(task.id); }}
+                                                    className={`w-24 h-14 bg-gray-100 rounded border border-gray-200 flex items-center justify-center overflow-hidden relative shadow-sm ${task.status === 'COMPLETED' && ((task.mediaType === 'image' && task.imageUrl) || ((task.mediaType || 'video') === 'video' && task.videoUrl)) ? 'cursor-pointer hover:border-blue-400' : ''}`}
                                                 >
-                                                    {task.status === 'COMPLETED' && task.videoUrl ? (
+                                                    {task.status === 'COMPLETED' && (task.mediaType || 'video') === 'video' && task.videoUrl ? (
                                                         <>
                                                             <video src={String(task.videoUrl)} className="w-full h-full object-cover" muted onMouseOver={e => e.target.play()} onMouseOut={e => e.target.pause()} />
                                                             <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
                                                                 <span className="text-white text-[10px] font-bold">播放</span>
+                                                            </div>
+                                                        </>
+                                                    ) : (task.status === 'COMPLETED' && task.mediaType === 'image' && task.imageUrl ? (
+                                                        <>
+                                                            <img src={String(task.imageUrl)} className="w-full h-full object-cover" alt="preview" />
+                                                            <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                <span className="text-white text-[10px] font-bold">Preview</span>
                                                             </div>
                                                         </>
                                                     ) : (
@@ -1064,20 +1834,84 @@ export default function App() {
                                                             {(task.status === 'GENERATING' || task.status === 'STARTING' || task.status === 'PROCESSING' || task.status === 'CACHING') && <IconLoader className="text-blue-500" />}
                                                             <span className="text-[10px] text-gray-500 font-bold">{String(task.stage || '')}</span>
                                                         </div>
+                                                    ))}
+                                                    {false && (
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); setActiveImageTaskId(task.id); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+                                                            >
+                                                                Preview
+                                                            </button>
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); triggerDownload(task.imageUrl, task.id, `${task.projectName || 'image_task'}_${task.id}`, '.png'); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                                                            >
+                                                                下载
+                                                            </button>
+                                                        </div>
                                                     )}
                                                     {(task.status === 'GENERATING' || task.status === 'STARTING') && (
                                                         <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200">
                                                             <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${task.progress}%` }}></div>
                                                         </div>
                                                     )}
-                                                </div>
-                                            </td>
+                                                    {false && (
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); setActiveImageTaskId(task.id); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+                                                            >
+                                                                Preview
+                                                            </button>
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); triggerDownload(task.imageUrl, task.id, `${task.projectName || 'image_task'}_${task.id}`, '.png'); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                                                            >
+                                                                下载
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                    {false && (
+                                                        <div className="flex gap-2">
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); setActiveImageTaskId(task.id); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+                                                            >
+                                                                Preview
+                                                            </button>
+                                                            <button
+                                                                onClick={(e) => { e.stopPropagation(); triggerDownload(task.imageUrl, task.id, `${task.projectName || 'image_task'}_${task.id}`, '.png'); }}
+                                                                className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                                                            >
+                                                                下载
+                                                            </button>
+                                                        </div>
+                                                     )}
+                                                     {false && (
+                                                          <div className="flex gap-2">
+                                                              <button
+                                                                  onClick={(e) => { e.stopPropagation(); setActiveImageTaskId(task.id); }}
+                                                                 className="px-3 py-1.5 text-xs font-bold bg-gray-900 text-white rounded-lg hover:bg-gray-800 transition-colors"
+                                                             >
+                                                                 Preview
+                                                             </button>
+                                                             <button
+                                                                 onClick={(e) => { e.stopPropagation(); triggerDownload(task.imageUrl, task.id, `${task.projectName || 'image_task'}_${task.id}`, '.png'); }}
+                                                                 className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+                                                             >
+                                                                 下载
+                                                             </button>
+                                                         </div>
+                                                     )}
+                                                 </div>
+                                             </td>
                                             <td className="p-4 cursor-pointer hover:bg-gray-100 transition-colors relative" onMouseEnter={(e) => setActiveTooltip({ taskId: task.id, type: 'prompt', rect: e.currentTarget.getBoundingClientRect(), title: '完整提示词' })} onMouseLeave={() => setActiveTooltip(null)} onClick={() => handleCopy(task.prompt)}>
                                                 <div className="flex flex-col gap-1">
                                                     <div className="text-xs font-bold text-blue-600 uppercase bg-blue-50 w-fit px-1.5 py-0.5 rounded">{String(task.projectName || '')}</div>
                                                     <div className="text-sm text-gray-800 font-medium line-clamp-3 leading-relaxed" title="点击复制完整内容">{String(task.prompt || '')}</div>
                                                     <div className="text-[10px] text-gray-400 mt-1 flex items-center gap-1">
-                                                        <span className={`px-1 py-0.5 rounded ${task.generationType === 'text' ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>{task.generationType === 'text' ? '文生视频' : '图生视频'}</span>
+                                                        <span className={`px-1 py-0.5 rounded ${task.generationType === 'text' ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>{task.generationType === 'text' ? ((task.mediaType === 'image') ? '文生图' : '文生视频') : ((task.mediaType === 'image') ? '图生图' : '图生视频')}</span>
                                                         {task.scriptSnippet && !String(task.scriptSnippet).startsWith("重复任务") && <span className="truncate max-w-[200px]">台词: "{String(task.scriptSnippet)}"</span>}
                                                     </div>
                                                 </div>
@@ -1094,7 +1928,7 @@ export default function App() {
                                             >
                                                 <div className="flex flex-col gap-2">
                                                     <StatusBadge status={task.status} stage={task.stage} progress={task.progress} warning={task.warning} />
-                                                    {task.status === 'COMPLETED' && task.videoUrl && (
+                                                    {task.status === 'COMPLETED' && (task.mediaType || 'video') === 'video' && task.videoUrl && (
                                                         <div className="flex gap-2">
                                                             <button
                                                                 onClick={(e) => { e.stopPropagation(); setActiveVideoTaskId(task.id); }}
@@ -1103,7 +1937,7 @@ export default function App() {
                                                                 播放
                                                             </button>
                                                             <button
-                                                                onClick={(e) => { e.stopPropagation(); triggerDownload(task.videoUrl, task.id, `${task.projectName || 'sora_task'}_${task.id}`); }}
+                                                                onClick={(e) => { e.stopPropagation(); triggerDownload(task.videoUrl, task.id, `${task.projectName || 'sora_task'}_${task.id}`, '.mp4'); }}
                                                                 className="px-3 py-1.5 text-xs font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
                                                             >
                                                                 下载
@@ -1117,11 +1951,14 @@ export default function App() {
                                 </tbody>
                             </table>
                         </div>
+                        )}
                     </div>
                 </section>
             </div>
         </main>
       </div>
+        </>
+      )}
 
       {showBatchModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
@@ -1162,18 +1999,196 @@ export default function App() {
       )}
 
       {showSettings && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4">
-              <div className="bg-white border border-gray-200 rounded-xl shadow-2xl w-full max-w-md p-6 space-y-6">
-                  <div className="flex justify-between items-center border-b border-gray-100 pb-4"><h3 className="font-bold text-gray-900 text-lg">系统设置</h3><button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-900"><IconX size={20}/></button></div>
-                  <div className="space-y-4">
-                      <div className="space-y-2"><label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> API 地址 (Endpoint)</label><input type="text" value={String(config.baseUrl || '')} onChange={(e) => setConfig({...config, baseUrl: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" /></div>
-                      <div className="space-y-2"><label className="text-xs font-semibold text-gray-500 uppercase">API 密钥 (Key)</label><input type="password" value={String(config.apiKey || '')} onChange={(e) => setConfig({...config, apiKey: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" /></div>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4" onClick={() => setShowSettings(false)}>
+              <div className="bg-white border border-gray-200 rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100">
+                      <div className="min-w-0">
+                          <h3 className="font-bold text-gray-900 text-lg">设置</h3>
+                          <div className="text-[11px] text-gray-500 mt-0.5 truncate">统一使用 `v1/chat/completions` 接口</div>
+                      </div>
+                      <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-900 hover:bg-gray-100 p-2 rounded-lg transition-colors" title="关闭">
+                          <IconX size={20}/>
+                      </button>
                   </div>
-                  <div className="pt-4 border-t border-gray-100 space-y-4">
-                      <div className="space-y-2"><label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLayers size={12}/> 并发控制</label><input type="number" min="1" value={config.maxConcurrent} onChange={(e) => setConfig({...config, maxConcurrent: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500" /></div>
-                      <div className="space-y-2"><label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconClock size={12}/> 提交间隔 (秒)</label><div className="flex items-center gap-3"><input type="number" min="0.1" step="0.1" value={config.taskInterval} onChange={(e) => setConfig({...config, taskInterval: Math.max(0.1, parseFloat(e.target.value) || 0.1)})} className="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500" /><span className="text-xs text-gray-400 font-medium">S</span></div></div>
+
+                  <div className="flex-1 overflow-y-auto px-6 py-5 space-y-8">
+                      <section className="space-y-4">
+                          <div className="flex items-center justify-between gap-3">
+                              <h4 className="text-sm font-bold text-gray-900">生成</h4>
+                              <div className="text-[10px] text-gray-400 font-mono truncate">{workMode === 'image' ? selectedImageModelName : selectedVideoModelName}</div>
+                          </div>
+
+                          <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200 w-fit">
+                              <button onClick={() => setWorkMode('video')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${workMode === 'video' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Video</button>
+                              <button onClick={() => setWorkMode('image')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${workMode === 'image' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Image</button>
+                          </div>
+
+                          {workMode === 'video' ? (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                  <div className="space-y-2">
+                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Video Model</label>
+                                      <div className="grid grid-cols-2 gap-2">
+                                          <button onClick={() => setModelFamily('sora2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2</button>
+                                          <button onClick={() => setModelFamily('sora2pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro</button>
+                                          <button onClick={() => setModelFamily('sora2pro-hd')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro-hd' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro-hd</button>
+                                          <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-short</button>
+                                          <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-medium</button>
+                                          <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-long</button>
+                                      </div>
+                                  </div>
+                                  <div className="space-y-4">
+                                      <div className="space-y-2">
+                                          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">画面方向</label>
+                                          <div className="grid grid-cols-2 gap-2">
+                                              <button onClick={() => setOrientation('landscape')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${orientation === 'landscape' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>横屏</button>
+                                              <button onClick={() => setOrientation('portrait')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${orientation === 'portrait' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>竖屏</button>
+                                          </div>
+                                      </div>
+                                      <div className="space-y-2">
+                                          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">时长</label>
+                                          <div className="grid grid-cols-2 gap-2">
+                                              <button onClick={() => setDuration('10s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '10s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>10秒</button>
+                                              <button onClick={() => setDuration('15s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '15s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>15秒</button>
+                                          </div>
+                                      </div>
+                                      <div className="space-y-2">
+                                          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
+                                          <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedVideoModelName)}</div>
+                                      </div>
+                                  </div>
+                              </div>
+                          ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                  <div className="space-y-2">
+                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Image Model</label>
+                                      <div className="grid grid-cols-1 gap-2">
+                                          <button onClick={() => setImageModel('gpt-image')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${imageModel === 'gpt-image' ? 'bg-white border-emerald-500 text-emerald-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>gpt-image</button>
+                                          <button onClick={() => setImageModel('gpt-image-landscape')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${imageModel === 'gpt-image-landscape' ? 'bg-white border-emerald-500 text-emerald-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>gpt-image-landscape</button>
+                                          <button onClick={() => setImageModel('gpt-image-portrait')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${imageModel === 'gpt-image-portrait' ? 'bg-white border-emerald-500 text-emerald-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>gpt-image-portrait</button>
+                                      </div>
+                                  </div>
+                                  <div className="space-y-2">
+                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
+                                      <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedImageModelName)}</div>
+                                  </div>
+                              </div>
+                          )}
+                      </section>
+
+                      <section className="space-y-4">
+                          <h4 className="text-sm font-bold text-gray-900">对话显示</h4>
+                          <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200 w-fit">
+                              <button onClick={() => setRecordsScope('project')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${recordsScope === 'project' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>当前项目</button>
+                              <button onClick={() => setRecordsScope('all')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${recordsScope === 'all' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>全部记录</button>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                              <div className="space-y-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前项目</label>
+                                  <select value={String(activeProjectId)} onChange={(e) => setActiveProjectId(parseInt(e.target.value, 10) || activeProjectId)} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500">
+                                      {projects.map((p) => (
+                                          <option key={p.id} value={String(p.id)}>{String(p.name || `项目 ${p.id}`)}</option>
+                                      ))}
+                                  </select>
+                                  <div className="flex gap-2">
+                                      <button onClick={handleCreateProject} className="flex-1 px-3 py-2 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">新建</button>
+                                      <button onClick={(e) => handleDeleteProject(e, activeProjectId)} className={`flex-1 px-3 py-2 text-xs font-bold rounded-lg border ${projects.length <= 1 ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'}`} disabled={projects.length <= 1}>删除</button>
+                                  </div>
+                              </div>
+                              <div className="space-y-2 md:col-span-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">项目名称</label>
+                                  <input type="text" value={String(activeProject?.name || '')} onChange={(e) => updateActiveProject('name', e.target.value)} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500" />
+                              </div>
+                          </div>
+
+                          <div className="space-y-2">
+                              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex justify-between">总提示词 (Master Prompt)<span className="text-xs text-blue-600 normal-case bg-blue-50 px-2 py-0.5 rounded">可用 "这是台词文案" 占位</span></label>
+                              <textarea value={String(activeProject?.prompt || '')} onChange={(e) => updateActiveProject('prompt', e.target.value)} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all resize-none min-h-[120px] font-mono leading-relaxed" placeholder="例如：一个精美的咖啡杯，这是台词文案，4k分辨率..." />
+                          </div>
+
+                          <div className="space-y-2">
+                              <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">默认图片（可选，批量/复用用）</label>
+                              <div className="relative">
+                                  <input type="file" accept="image/*" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                                  <div className={`h-28 rounded-lg border-2 border-dashed flex items-center justify-center transition-colors ${activeProject?.image ? 'border-blue-500/40 bg-blue-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100'}`}>
+                                      {activeProject?.image ? (
+                                          <div className="flex items-center gap-3 px-3">
+                                              <img src={String(activeProject.image)} alt="preview" className="h-20 w-20 rounded object-cover border border-gray-200 shadow-sm" />
+                                              <div className="min-w-0">
+                                                  <div className="text-xs text-green-600 font-bold flex items-center gap-2"><IconCheck size={14} /> 已上传</div>
+                                                  <div className="text-[10px] text-gray-500 mt-1 truncate max-w-[240px]">{String(activeProject.imageName || '')}</div>
+                                                  <div className="text-[10px] text-blue-500 mt-1">点击替换</div>
+                                              </div>
+                                          </div>
+                                      ) : (
+                                          <div className="text-center text-gray-400"><IconPlus size={20} className="mx-auto mb-1 text-gray-300"/><span className="text-xs font-medium">点击上传图片</span></div>
+                                      )}
+                                  </div>
+                              </div>
+                          </div>
+                      </section>
+
+                      <section className="space-y-4">
+                          <div className="flex items-center justify-between gap-3">
+                              <h4 className="text-sm font-bold text-gray-900">批量生成</h4>
+                              <button onClick={handleOpenBatchModal} className="px-3 py-2 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">打开批量面板</button>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+                                  <button onClick={() => setBatchMode('script')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'script' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>台词模式</button>
+                                  <button onClick={() => setBatchMode('repeat')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'repeat' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>重复模式</button>
+                              </div>
+
+                              <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
+                                  <button onClick={() => setGenerationType('text')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${generationType === 'text' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{workMode === 'image' ? '文生图' : '文生视频'}</button>
+                                  <button onClick={() => setGenerationType('image')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${generationType === 'image' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{workMode === 'image' ? '图生图' : '图生视频'}</button>
+                              </div>
+                          </div>
+
+                          {batchMode === 'repeat' && (
+                              <div className="space-y-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">重复次数</label>
+                                  <input type="number" min="1" value={repeatCount} onChange={(e) => setRepeatCount(Math.max(1, parseInt(e.target.value) || 1))} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500" />
+                              </div>
+                          )}
+
+                          {generationType === 'image' && !activeProject?.image && (
+                              <div className="text-xs text-red-600">
+                                  图生模式需要上传「默认图片」。聊天框里也可以直接附带图片发送。
+                              </div>
+                          )}
+                      </section>
+
+                      <section className="space-y-4">
+                          <h4 className="text-sm font-bold text-gray-900">系统</h4>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                              <div className="space-y-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> API 地址 (Endpoint)</label>
+                                  <input type="text" value={String(config.baseUrl || '')} onChange={(e) => setConfig({...config, baseUrl: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
+                              </div>
+                              <div className="space-y-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase">API 密钥 (Key)</label>
+                                  <input type="password" value={String(config.apiKey || '')} onChange={(e) => setConfig({...config, apiKey: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
+                              </div>
+                              <div className="space-y-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLayers size={12}/> 并发控制</label>
+                                  <input type="number" min="1" value={config.maxConcurrent} onChange={(e) => setConfig({...config, maxConcurrent: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500" />
+                              </div>
+                              <div className="space-y-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconClock size={12}/> 提交间隔 (秒)</label>
+                                  <div className="flex items-center gap-3">
+                                      <input type="number" min="0.1" step="0.1" value={config.taskInterval} onChange={(e) => setConfig({...config, taskInterval: Math.max(0.1, parseFloat(e.target.value) || 0.1)})} className="flex-1 bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500" />
+                                      <span className="text-xs text-gray-400 font-medium">S</span>
+                                  </div>
+                              </div>
+                          </div>
+                      </section>
                   </div>
-                  <div className="flex justify-end pt-2"><button onClick={() => setShowSettings(false)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-sm transition-all">保存并关闭</button></div>
+
+                  <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-white">
+                      <button onClick={() => setShowSettings(false)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-sm transition-all">保存并关闭</button>
+                  </div>
               </div>
           </div>
       )}
@@ -1203,7 +2218,7 @@ export default function App() {
                                   复制链接
                               </button>
                               <button
-                                  onClick={(e) => { e.stopPropagation(); triggerDownload(videoUrl, task.id, suggestedName); }}
+                                  onClick={(e) => { e.stopPropagation(); triggerDownload(videoUrl, task.id, suggestedName, '.mp4'); }}
                                   className="px-3 py-1.5 text-xs font-bold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
                               >
                                   下载
@@ -1222,6 +2237,50 @@ export default function App() {
       })()}
 
       {/* 智能悬浮窗 */}
+      {activeImageTaskId && (() => {
+          const task = queue.find(t => t.id === activeImageTaskId);
+          if (!task?.imageUrl) return null;
+          const imageUrl = String(task.imageUrl);
+          const suggestedName = `${task.projectName || 'image_task'}_${task.id}`;
+          const urlPreview = imageUrl.startsWith('data:') ? `${imageUrl.slice(0, 80)}...` : imageUrl;
+
+          return (
+              <div
+                  className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+                  onClick={() => setActiveImageTaskId(null)}
+              >
+                  <div className="bg-white border border-gray-200 rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 gap-4">
+                          <div className="min-w-0">
+                              <div className="text-sm font-bold text-gray-900 truncate">{String(task.projectName || `Task ${task.id}`)}</div>
+                              <div className="text-[10px] text-gray-500 font-mono truncate">{urlPreview}</div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                  onClick={(e) => { e.stopPropagation(); handleCopy(imageUrl); }}
+                                  className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                              >
+                                  Copy
+                              </button>
+                              <button
+                                  onClick={(e) => { e.stopPropagation(); triggerDownload(imageUrl, task.id, suggestedName, '.png'); }}
+                                  className="px-3 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
+                              >
+                                  Download
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); setActiveImageTaskId(null); }} className="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-lg" title="Close">
+                                  <IconX size={18} />
+                              </button>
+                          </div>
+                      </div>
+                      <div className="bg-black">
+                          <img src={imageUrl} alt="preview" className="w-full max-h-[70vh] object-contain" />
+                      </div>
+                  </div>
+              </div>
+          );
+      })()}
+
       {activeTooltip && (() => {
           const task = queue.find(t => t.id === activeTooltip.taskId);
           if (!task) return null;

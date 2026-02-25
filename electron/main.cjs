@@ -3,7 +3,7 @@ const path = require('path');
 
 let mainWindow;
 
-ipcMain.on('download-video', (event, { url, filename }) => {
+const handleDownload = (event, { url, filename }) => {
   if (!url || typeof url !== 'string') return;
 
   const webContents = event.sender;
@@ -52,7 +52,10 @@ ipcMain.on('download-video', (event, { url, filename }) => {
     session.removeListener('will-download', onWillDownload);
     clearTimeout(cleanupTimer);
   }
-});
+};
+
+ipcMain.on('download-video', handleDownload);
+ipcMain.on('download-file', handleDownload);
 
 const createWindow = () => {
   mainWindow = new BrowserWindow({
