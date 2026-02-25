@@ -98,17 +98,6 @@ const safeJsonParse = (value, fallback) => {
   }
 };
 
-const formatModelDisplayName = (value) => {
-  const raw = String(value || '');
-  if (!raw) return raw;
-  return raw
-    .replace(/-hd\b/gi, '-高清')
-    .replace(/-landscape\b/gi, '-横屏')
-    .replace(/-portrait\b/gi, '-竖屏')
-    .replace(/-10s\b/gi, '-10秒')
-    .replace(/-15s\b/gi, '-15秒');
-};
-
 const DEFAULT_CONFIG = {
   baseUrl: 'http://localhost:8000/v1/chat/completions',
   apiKey: 'han1234',
@@ -1467,7 +1456,7 @@ export default function App() {
                       <div className="flex justify-start">
                         <div className="max-w-[92%] rounded-2xl px-4 py-3 bg-white border border-gray-200 shadow-sm">
                           <div className="flex items-center justify-between gap-3 mb-2">
-                            <div className="text-[10px] text-gray-500 font-mono truncate">{formatModelDisplayName(task.modelUsed || '')}</div>
+                            <div className="text-[10px] text-gray-500 font-mono truncate">{String(task.modelUsed || '')}</div>
                             <StatusBadge status={task.status} stage={task.stage} progress={task.progress} warning={task.warning} />
                           </div>
 
@@ -1678,9 +1667,9 @@ export default function App() {
                                     <button onClick={() => setModelFamily('sora2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2</button>
                                     <button onClick={() => setModelFamily('sora2pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro</button>
                                     <button onClick={() => setModelFamily('sora2pro-hd')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro-hd' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro-高清</button>
-                                    <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-short</button>
-                                    <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-medium</button>
-                                    <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-long</button>
+                                    <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-短</button>
+                                    <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-中</button>
+                                    <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-长</button>
                                 </div>
                             </div>
                             <div className="space-y-3">
@@ -1699,7 +1688,7 @@ export default function App() {
                             </div>
                             <div className="space-y-3">
                                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
-                                <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{formatModelDisplayName(selectedModelName)}</div>
+                                <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedModelName)}</div>
                             </div>
                                 </>
                             ) : (
@@ -1714,7 +1703,7 @@ export default function App() {
                                     </div>
                                     <div className="space-y-3">
                                         <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Current Model</label>
-                                        <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{formatModelDisplayName(selectedModelName)}</div>
+                                        <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedModelName)}</div>
                                     </div>
                                 </>
                             )}
@@ -1771,7 +1760,7 @@ export default function App() {
                                                     <div className="flex justify-start">
                                                         <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-white border border-gray-200 shadow-sm">
                                                             <div className="flex items-center justify-between gap-3 mb-2">
-                                                                <div className="text-[10px] text-gray-500 font-mono truncate">{formatModelDisplayName(task.modelUsed || '')}</div>
+                                                                <div className="text-[10px] text-gray-500 font-mono truncate">{String(task.modelUsed || '')}</div>
                                                                 <div className="text-[10px] text-gray-500 font-bold uppercase">{String(task.status || '')}</div>
                                                             </div>
 
@@ -2026,7 +2015,7 @@ export default function App() {
                       <section className="space-y-4">
                           <div className="flex items-center justify-between gap-3">
                               <h4 className="text-sm font-bold text-gray-900">生成</h4>
-                              <div className="text-[10px] text-gray-400 font-mono truncate">{formatModelDisplayName(workMode === 'image' ? selectedImageModelName : selectedVideoModelName)}</div>
+                              <div className="text-[10px] text-gray-400 font-mono truncate">{String(workMode === 'image' ? selectedImageModelName : selectedVideoModelName)}</div>
                           </div>
 
                           <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200 w-fit">
@@ -2042,9 +2031,9 @@ export default function App() {
                                           <button onClick={() => setModelFamily('sora2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2</button>
                                           <button onClick={() => setModelFamily('sora2pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro</button>
                                           <button onClick={() => setModelFamily('sora2pro-hd')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro-hd' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro-高清</button>
-                                          <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-short</button>
-                                          <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-medium</button>
-                                          <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>prompt-enhance-long</button>
+                                          <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-短</button>
+                                          <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-中</button>
+                                          <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-长</button>
                                       </div>
                                   </div>
                                   <div className="space-y-4">
@@ -2064,7 +2053,7 @@ export default function App() {
                                       </div>
                                       <div className="space-y-2">
                                           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
-                                          <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{formatModelDisplayName(selectedVideoModelName)}</div>
+                                          <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedVideoModelName)}</div>
                                       </div>
                                   </div>
                               </div>
@@ -2080,7 +2069,7 @@ export default function App() {
                                   </div>
                                   <div className="space-y-2">
                                       <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
-                                      <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{formatModelDisplayName(selectedImageModelName)}</div>
+                                      <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedImageModelName)}</div>
                                   </div>
                               </div>
                           )}
