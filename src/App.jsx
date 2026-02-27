@@ -106,8 +106,8 @@ const envFlag = (value, fallback = false) => {
 };
 
 const GATEWAY_AUTH = {
-  enabled: envFlag(import.meta?.env?.VITE_AUTH_ENABLED, false),
-  username: String(import.meta?.env?.VITE_AUTH_USERNAME || 'internal') || 'internal',
+  enabled: envFlag(import.meta.env.VITE_AUTH_ENABLED, false),
+  username: String(import.meta.env.VITE_AUTH_USERNAME || 'internal') || 'internal',
 };
 
 const toBase64 = (value) => {
