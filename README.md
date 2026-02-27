@@ -97,18 +97,18 @@ docker build \
 2) 运行容器
 
 ```bash
-docker run -d --name sora2-manager -p 8080:80 sora2-manager:latest
+docker run -d --name sora2-manager -p 18130:80 sora2-manager:latest
 ```
 
 3) （可选）用 docker compose
 
 ```bash
-PORT=8080 VITE_AUTH_ENABLED=true VITE_AUTH_USERNAME=internal docker compose up -d --build
+PORT=18130 VITE_AUTH_ENABLED=true VITE_AUTH_USERNAME=internal docker compose up -d --build
 ```
 
 4) OpenResty 反代建议
 
-- 建议把 `/` 反代到前端容器（例如 `http://127.0.0.1:8080`）
+- 建议把 `/` 反代到前端容器（例如 `http://127.0.0.1:18130`）
 - 把 `/v1/` 反代到 sora2api（另一台服务器），并只对 `/v1/*` 开启 Basic Auth；认证通过后再把 `Authorization` 覆盖为 Bearer key 转发给上游
 - 流式要关缓冲：`proxy_buffering off;`，并调大超时与 `client_max_body_size`
 

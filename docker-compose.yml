@@ -6,5 +6,5 @@ services:
         VITE_AUTH_ENABLED: ${VITE_AUTH_ENABLED:-false}
         VITE_AUTH_USERNAME: ${VITE_AUTH_USERNAME:-internal}
     ports:
-      - "${PORT:-8080}:80"
+      - "${PORT:-18130}:80"
     restart: unless-stopped
