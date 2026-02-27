@@ -2,9 +2,15 @@ services:
   sora2-manager:
     build:
       context: .
-      args:
-        VITE_AUTH_ENABLED: ${VITE_AUTH_ENABLED:-false}
-        VITE_AUTH_USERNAME: ${VITE_AUTH_USERNAME:-internal}
     ports:
-      - "${PORT:-18130}:80"
+      - "${PORT:-18130}:18130"
+    environment:
+      PORT: 18130
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-7}
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-sora2_manager_session_v1}
+      SORA2API_BASE_URL: ${SORA2API_BASE_URL:-}
+      SORA2API_KEY: ${SORA2API_KEY:-}
     restart: unless-stopped

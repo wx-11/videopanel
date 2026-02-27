@@ -75,7 +75,6 @@ const STORAGE_KEYS = {
   queue: 'sora2_manager_queue_v1',
   projects: 'sora2_manager_projects_v1',
   ui: 'sora2_manager_ui_v1',
-  gatewayAuthPassword: 'sora2_manager_gateway_basic_password_v1',
 };
 
 const MAX_SAVED_TASKS = 200;
@@ -99,41 +98,19 @@ const safeJsonParse = (value, fallback) => {
   }
 };
 
-const envFlag = (value, fallback = false) => {
-  const str = String(value ?? '').trim().toLowerCase();
-  if (!str) return fallback;
-  return str === '1' || str === 'true' || str === 'yes' || str === 'on';
-};
-
-const GATEWAY_AUTH = {
-  enabled: envFlag(import.meta.env.VITE_AUTH_ENABLED, false),
-  username: String(import.meta.env.VITE_AUTH_USERNAME || 'internal') || 'internal',
-};
-
-const toBase64 = (value) => {
-  const str = String(value ?? '');
-  try {
-    return btoa(str);
-  } catch (e) {
-    try {
-      const bytes = new TextEncoder().encode(str);
-      let binary = '';
-      bytes.forEach((b) => { binary += String.fromCharCode(b); });
-      return btoa(binary);
-    } catch (err) {
-      return '';
-    }
-  }
-};
-
 const inferDefaultBaseUrl = () => {
   try {
     if (typeof window === 'undefined') return 'http://localhost:8000/v1/chat/completions';
     const protocol = window.location?.protocol;
     const hostname = window.location?.hostname;
+    const port = window.location?.port;
     const isHttp = protocol === 'http:' || protocol === 'https:';
     const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
-    if (isHttp && hostname && !isLocalHost) return '/v1/chat/completions';
+    const isViteDev = port === '5173' || port === '4173';
+    if (isHttp && hostname) {
+      if (!isLocalHost) return '/v1/chat/completions';
+      if (!isViteDev) return '/v1/chat/completions';
+    }
   } catch (e) { }
   return 'http://localhost:8000/v1/chat/completions';
 };
@@ -477,17 +454,11 @@ export default function App() {
 
   // --- 全局配置 ---
   const [config, setConfig] = useState(() => getInitialConfig());
-  const [gatewayPassword, setGatewayPassword] = useState(() => {
-    if (!GATEWAY_AUTH.enabled) return '';
-    if (typeof window === 'undefined' || !window.localStorage) return '';
-    try {
-      return String(window.localStorage.getItem(STORAGE_KEYS.gatewayAuthPassword) || '');
-    } catch (e) {
-      return '';
-    }
-  });
+  const [gatewayAuthStatus, setGatewayAuthStatus] = useState(() => ({ enabled: false, authed: true, checked: false }));
   const [showGatewayAuthModal, setShowGatewayAuthModal] = useState(false);
   const [gatewayPasswordDraft, setGatewayPasswordDraft] = useState('');
+  const [gatewayAuthSubmitting, setGatewayAuthSubmitting] = useState(false);
+  const [gatewayAuthError, setGatewayAuthError] = useState('');
 
   // --- 项目管理状态 ---
   const [projects, setProjects] = useState(() => getInitialProjects());
@@ -549,45 +520,77 @@ export default function App() {
   const persistUiTimer = useRef(null);
   const didMigrateQueueProjectIds = useRef(false);
 
-  const isGatewayAuthed = !GATEWAY_AUTH.enabled || Boolean(String(gatewayPassword || '').trim());
+  const gatewayAuthEnabled = Boolean(gatewayAuthStatus?.enabled);
+  const gatewayAuthChecked = Boolean(gatewayAuthStatus?.checked);
+  const isGatewayAuthed = !gatewayAuthEnabled || Boolean(gatewayAuthStatus?.authed);
+
+  const refreshGatewayAuthStatus = async ({ openModalOnNeed = false } = {}) => {
+    try {
+      const response = await fetch('/auth/status', { credentials: 'same-origin' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      const next = {
+        enabled: Boolean(data?.enabled),
+        authed: Boolean(data?.authed),
+        checked: true,
+      };
+      setGatewayAuthStatus(next);
+      if (openModalOnNeed && next.enabled && !next.authed) setShowGatewayAuthModal(true);
+      return next;
+    } catch (e) {
+      const next = { enabled: false, authed: true, checked: true };
+      setGatewayAuthStatus(next);
+      return next;
+    }
+  };
 
   const openGatewayAuthModal = () => {
-    setGatewayPasswordDraft(String(gatewayPassword || ''));
+    setGatewayAuthError('');
+    setGatewayPasswordDraft('');
     setShowGatewayAuthModal(true);
   };
 
-  const saveGatewayPassword = () => {
-    const nextPassword = String(gatewayPasswordDraft || '').trim();
-    setGatewayPassword(nextPassword);
+  const submitGatewayLogin = async () => {
+    const password = String(gatewayPasswordDraft || '').trim();
+    if (!password) return;
+    setGatewayAuthSubmitting(true);
+    setGatewayAuthError('');
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        if (nextPassword) window.localStorage.setItem(STORAGE_KEYS.gatewayAuthPassword, nextPassword);
-        else window.localStorage.removeItem(STORAGE_KEYS.gatewayAuthPassword);
+      const response = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password }),
+        credentials: 'same-origin',
+      });
+
+      if (!response.ok) {
+        let msg = `HTTP ${response.status}`;
+        try {
+          const errorText = await response.text();
+          if (errorText) msg = errorText;
+        } catch (e) { }
+        throw new Error(msg);
       }
-    } catch (e) { }
-    setShowGatewayAuthModal(false);
+
+      await refreshGatewayAuthStatus();
+      setShowGatewayAuthModal(false);
+      setGatewayPasswordDraft('');
+    } catch (e) {
+      setGatewayAuthError('密码错误或服务端未正确配置鉴权');
+      await refreshGatewayAuthStatus();
+    } finally {
+      setGatewayAuthSubmitting(false);
+    }
   };
 
-  const clearGatewayPassword = () => {
-    setGatewayPassword('');
-    setGatewayPasswordDraft('');
+  const logoutGatewayAuth = async () => {
     try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.removeItem(STORAGE_KEYS.gatewayAuthPassword);
-      }
+      await fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' });
     } catch (e) { }
-    setShowGatewayAuthModal(false);
+    await refreshGatewayAuthStatus();
   };
 
   const getAuthorizationHeader = () => {
-    if (GATEWAY_AUTH.enabled) {
-      const password = String(gatewayPassword || '').trim();
-      if (password) {
-        const token = toBase64(`${GATEWAY_AUTH.username}:${password}`);
-        if (token) return `Basic ${token}`;
-      }
-    }
-
     const apiKey = String(config.apiKey || '').trim();
     return apiKey ? `Bearer ${apiKey}` : null;
   };
@@ -600,6 +603,11 @@ export default function App() {
   };
 
   const ensureGatewayAuthed = () => {
+    if (!gatewayAuthChecked) {
+      refreshGatewayAuthStatus({ openModalOnNeed: true });
+      return false;
+    }
+    if (!gatewayAuthEnabled) return true;
     if (isGatewayAuthed) return true;
     openGatewayAuthModal();
     return false;
@@ -630,9 +638,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (GATEWAY_AUTH.enabled && !isGatewayAuthed) {
-      setShowGatewayAuthModal(true);
-    }
+    refreshGatewayAuthStatus({ openModalOnNeed: true });
   }, []);
 
   useEffect(() => {
@@ -824,7 +830,8 @@ export default function App() {
     const runningCount = queue.filter(t => t.status === 'GENERATING' || t.status === 'STARTING' || t.status === 'PROCESSING' || t.status === 'CACHING').length;
     const pendingTasks = queue.filter(t => t.status === 'PENDING');
 
-    if (GATEWAY_AUTH.enabled && !isGatewayAuthed) return;
+    if (!gatewayAuthChecked) return;
+    if (gatewayAuthEnabled && !isGatewayAuthed) return;
 
     if (runningCount < parseInt(config.maxConcurrent) && pendingTasks.length > 0) {
         const now = Date.now();
@@ -844,7 +851,7 @@ export default function App() {
             processTask(nextTask.id, nextTask.prompt, nextTask.image, nextTask.generationType, nextTask.modelUsed, nextTask.mediaType);
         }
     }
-  }, [queue, config.maxConcurrent, config.taskInterval, tick, isGatewayAuthed]);
+  }, [queue, config.maxConcurrent, config.taskInterval, tick, isGatewayAuthed, gatewayAuthChecked, gatewayAuthEnabled]);
 
   useEffect(() => {
       const proj = projects.find(p => p.id === activeProjectId);
@@ -1258,8 +1265,8 @@ export default function App() {
                   if (!response.ok) {
                       let errorMsg = `HTTP ${response.status}`;
                       try { const errorText = await response.text(); if (errorText) errorMsg = errorText; } catch (e) { }
-                      if ((response.status === 401 || response.status === 403) && GATEWAY_AUTH.enabled) {
-                        setShowGatewayAuthModal(true);
+                      if ((response.status === 401 || response.status === 403) && response.headers.get('x-sora2-manager-auth')) {
+                        await refreshGatewayAuthStatus({ openModalOnNeed: true });
                       }
                       throw new Error(errorMsg);
                   }
@@ -1382,8 +1389,8 @@ export default function App() {
           if (!response.ok) {
               let errorMsg = `HTTP ${response.status}`;
               try { const errorText = await response.text(); if (errorText) errorMsg = errorText; } catch (e) { }
-              if ((response.status === 401 || response.status === 403) && GATEWAY_AUTH.enabled) {
-                setShowGatewayAuthModal(true);
+              if ((response.status === 401 || response.status === 403) && response.headers.get('x-sora2-manager-auth')) {
+                await refreshGatewayAuthStatus({ openModalOnNeed: true });
               }
               throw new Error(errorMsg);
           }
@@ -2322,26 +2329,32 @@ export default function App() {
                                   <label className="text-xs font-semibold text-gray-500 uppercase">API 密钥 (Key，可选)</label>
                                   <input type="password" value={String(config.apiKey || '')} onChange={(e) => setConfig({...config, apiKey: e.target.value})} placeholder="留空表示无需前端鉴权 / 由服务端注入" className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
                               </div>
-                              {GATEWAY_AUTH.enabled && (
+                              {gatewayAuthEnabled && (
                                   <div className="space-y-2 md:col-span-2">
-                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">访问鉴权 (Basic)</label>
+                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">访问鉴权（密码）</label>
                                       <div className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5">
                                           <div className="min-w-0">
                                               <div className="text-xs text-gray-700 font-medium truncate">
-                                                  用户名：{String(GATEWAY_AUTH.username)} · {isGatewayAuthed ? '已设置访问密码' : '未设置访问密码'}
+                                                  状态：{isGatewayAuthed ? '已登录' : '未登录'}
                                               </div>
                                               <div className="text-[10px] text-gray-400 mt-1">
-                                                  开启后，请求将携带 Basic Authorization（推荐配合 OpenResty 仅对 /v1/* 启用 auth_basic）。
+                                                  鉴权由服务端控制（AUTH_ENABLED/AUTH_PASSWORD），浏览器通过 Cookie 保持会话。
                                               </div>
                                           </div>
                                           <div className="flex items-center gap-2 shrink-0">
-                                              <button onClick={openGatewayAuthModal} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">
-                                                  {isGatewayAuthed ? '修改' : '设置'}
-                                              </button>
-                                              {isGatewayAuthed && (
-                                                  <button onClick={clearGatewayPassword} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-red-600 rounded-lg hover:bg-red-50">
-                                                      清除
+                                              {!isGatewayAuthed ? (
+                                                  <button onClick={openGatewayAuthModal} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">
+                                                      登录
                                                   </button>
+                                              ) : (
+                                                  <>
+                                                      <button onClick={openGatewayAuthModal} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">
+                                                          重新登录
+                                                      </button>
+                                                      <button onClick={logoutGatewayAuth} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-red-600 rounded-lg hover:bg-red-50">
+                                                          退出
+                                                      </button>
+                                                  </>
                                               )}
                                           </div>
                                       </div>
@@ -2369,7 +2382,7 @@ export default function App() {
           </div>
       )}
 
-      {GATEWAY_AUTH.enabled && showGatewayAuthModal && (
+      {gatewayAuthEnabled && showGatewayAuthModal && (
           <div
               className="fixed inset-0 z-[65] flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
               onClick={() => setShowGatewayAuthModal(false)}
@@ -2395,10 +2408,11 @@ export default function App() {
                   </div>
 
                   <div className="px-5 py-4 space-y-3">
-                      <div className="text-[11px] text-gray-500">
-                          用户名：<span className="font-mono text-gray-700">{String(GATEWAY_AUTH.username)}</span>
-                          <span className="text-gray-400">（可通过 .env 的 VITE_AUTH_USERNAME 修改）</span>
-                      </div>
+                      {gatewayAuthError && (
+                          <div className="text-xs text-red-600">
+                              {String(gatewayAuthError || '')}
+                          </div>
+                      )}
                       <div className="space-y-2">
                           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">访问密码</label>
                           <input
@@ -2411,7 +2425,7 @@ export default function App() {
                                 if (e.isComposing || e.nativeEvent?.isComposing) return;
                                 if (!String(gatewayPasswordDraft || '').trim()) return;
                                 e.preventDefault();
-                                saveGatewayPassword();
+                                submitGatewayLogin();
                               }}
                               placeholder="请输入访问密码"
                               className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all"
@@ -2420,14 +2434,6 @@ export default function App() {
                   </div>
 
                   <div className="flex justify-end gap-2 px-5 py-4 border-t border-gray-100 bg-gray-50">
-                      {Boolean(String(gatewayPassword || '').trim()) && (
-                          <button
-                              onClick={clearGatewayPassword}
-                              className="px-4 py-2 text-xs font-bold bg-white border border-gray-300 text-red-600 rounded-lg hover:bg-red-50"
-                          >
-                              清除
-                          </button>
-                      )}
                       <button
                           onClick={() => setShowGatewayAuthModal(false)}
                           className="px-4 py-2 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
@@ -2435,15 +2441,15 @@ export default function App() {
                           取消
                       </button>
                       <button
-                          onClick={saveGatewayPassword}
-                          disabled={!String(gatewayPasswordDraft || '').trim()}
+                          onClick={submitGatewayLogin}
+                          disabled={!String(gatewayPasswordDraft || '').trim() || gatewayAuthSubmitting}
                           className={`px-4 py-2 text-xs font-bold rounded-lg ${
-                            !String(gatewayPasswordDraft || '').trim()
+                            (!String(gatewayPasswordDraft || '').trim() || gatewayAuthSubmitting)
                               ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                               : 'bg-blue-600 text-white hover:bg-blue-700'
                           }`}
                       >
-                          保存并继续
+                          {gatewayAuthSubmitting ? '登录中…' : '登录'}
                       </button>
                   </div>
               </div>

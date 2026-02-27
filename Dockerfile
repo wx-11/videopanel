@@ -10,16 +10,17 @@ RUN npm ci --no-audit --fund=false
 
 COPY . .
 
-ARG VITE_AUTH_ENABLED=false
-ARG VITE_AUTH_USERNAME=internal
-ENV VITE_AUTH_ENABLED=$VITE_AUTH_ENABLED
-ENV VITE_AUTH_USERNAME=$VITE_AUTH_USERNAME
-
 RUN npm run build
 
-FROM nginx:1.25-alpine
-COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist/ /usr/share/nginx/html/
+FROM node:20-alpine
+WORKDIR /app
 
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+ENV NODE_ENV=production
+ENV PORT=18130
+
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/dist/ ./dist/
+COPY --from=build /app/server/ ./server/
+
+EXPOSE 18130
+CMD ["node", "server/index.js"]
