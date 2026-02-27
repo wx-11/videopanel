@@ -524,6 +524,16 @@ export default function App() {
   const gatewayAuthChecked = Boolean(gatewayAuthStatus?.checked);
   const isGatewayAuthed = !gatewayAuthEnabled || Boolean(gatewayAuthStatus?.authed);
 
+  const redirectToLogin = () => {
+    try {
+      if (typeof window === 'undefined') return;
+      const pathname = String(window.location?.pathname || '/');
+      if (pathname === '/login' || pathname.startsWith('/login/')) return;
+      const next = `${pathname}${String(window.location?.search || '')}`;
+      window.location.href = `/login?next=${encodeURIComponent(next || '/')}`;
+    } catch (e) { }
+  };
+
   const refreshGatewayAuthStatus = async ({ openModalOnNeed = false } = {}) => {
     try {
       const response = await fetch('/auth/status', { credentials: 'same-origin' });
@@ -535,7 +545,7 @@ export default function App() {
         checked: true,
       };
       setGatewayAuthStatus(next);
-      if (openModalOnNeed && next.enabled && !next.authed) setShowGatewayAuthModal(true);
+      if (next.enabled && !next.authed) redirectToLogin();
       return next;
     } catch (e) {
       const next = { enabled: false, authed: true, checked: true };
@@ -609,7 +619,7 @@ export default function App() {
     }
     if (!gatewayAuthEnabled) return true;
     if (isGatewayAuthed) return true;
-    openGatewayAuthModal();
+    redirectToLogin();
     return false;
   };
 

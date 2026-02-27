@@ -64,6 +64,24 @@ const json = (res, statusCode, data) => {
   res.end(payload);
 };
 
+const html = (res, statusCode, body) => {
+  const payload = Buffer.from(String(body ?? ''), 'utf8');
+  res.writeHead(statusCode, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': payload.length,
+    'Cache-Control': 'no-store',
+  });
+  res.end(payload);
+};
+
+const redirect = (res, location, statusCode = 302) => {
+  res.writeHead(statusCode, {
+    Location: String(location || '/'),
+    'Cache-Control': 'no-store',
+  });
+  res.end();
+};
+
 const readJsonBody = async (req, maxBytes = 64 * 1024) => {
   const chunks = [];
   let bytes = 0;
@@ -166,6 +184,98 @@ const getAuthStatus = (req) => {
   if (!token) return { enabled: true, authed: false };
   return { enabled: true, authed: verifyToken(token).ok };
 };
+
+const renderLoginPage = () => `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sora2 Manager - 登录</title>
+    <style>
+      :root { color-scheme: light; }
+      body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji","Segoe UI Emoji"; background:#f9fafb; color:#111827; }
+      .wrap { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+      .card { width:100%; max-width:420px; background:#fff; border:1px solid #e5e7eb; border-radius:16px; box-shadow:0 20px 50px rgba(0,0,0,.12); overflow:hidden; }
+      .head { padding:18px 20px; border-bottom:1px solid #f3f4f6; display:flex; gap:10px; align-items:center; }
+      .dot { width:10px; height:10px; border-radius:999px; background:#2563eb; }
+      .title { font-size:14px; font-weight:800; letter-spacing:.2px; }
+      .sub { font-size:12px; color:#6b7280; margin-top:4px; }
+      .body { padding:18px 20px 6px; }
+      label { display:block; font-size:12px; font-weight:700; color:#6b7280; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+      input { width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px; padding:12px 12px; font-size:14px; outline:none; }
+      input:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59,130,246,.15); }
+      .err { margin-top:10px; font-size:12px; color:#dc2626; min-height:18px; }
+      .foot { padding:14px 20px 18px; display:flex; justify-content:flex-end; gap:10px; border-top:1px solid #f3f4f6; background:#f9fafb; }
+      button { border:1px solid transparent; border-radius:10px; padding:10px 14px; font-weight:800; font-size:12px; cursor:pointer; }
+      .btn { background:#2563eb; color:#fff; }
+      .btn[disabled] { background:#e5e7eb; color:#9ca3af; cursor:not-allowed; }
+      .ghost { background:#fff; border-color:#d1d5db; color:#374151; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="head">
+          <div class="dot"></div>
+          <div>
+            <div class="title">Sora2 Manager</div>
+            <div class="sub">请输入访问密码以继续</div>
+          </div>
+        </div>
+        <form id="form">
+          <div class="body">
+            <label for="password">访问密码</label>
+            <input id="password" type="password" autocomplete="current-password" placeholder="请输入访问密码" />
+            <div class="err" id="error"></div>
+          </div>
+          <div class="foot">
+            <button type="button" class="ghost" id="refresh">刷新</button>
+            <button type="submit" class="btn" id="submit">登录</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <script>
+      (function () {
+        const form = document.getElementById('form');
+        const input = document.getElementById('password');
+        const error = document.getElementById('error');
+        const submit = document.getElementById('submit');
+        const refresh = document.getElementById('refresh');
+        const qs = new URLSearchParams(location.search);
+        const nextRaw = qs.get('next') || '/';
+        const next = (typeof nextRaw === 'string' && nextRaw.startsWith('/') && !nextRaw.startsWith('//')) ? nextRaw : '/';
+
+        const setError = (msg) => { error.textContent = msg || ''; };
+        refresh.addEventListener('click', () => location.reload());
+
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const password = (input.value || '').trim();
+          if (!password) return;
+          submit.disabled = true;
+          setError('');
+          try {
+            const res = await fetch('/auth/login', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              credentials: 'same-origin',
+              body: JSON.stringify({ password })
+            });
+            if (!res.ok) throw new Error('密码错误');
+            location.replace(next || '/');
+          } catch (err) {
+            setError('密码错误或服务端未正确配置鉴权');
+            submit.disabled = false;
+            input.focus();
+          }
+        });
+
+        input.focus();
+      })();
+    </script>
+  </body>
+</html>`;
 
 const getUpstreamUrl = (reqUrl) => {
   if (!SORA2API_BASE_URL) return null;
@@ -319,7 +429,14 @@ const serveStatic = (req, res) => {
 const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
-  const pathname = String(req.url || '/').split('?')[0];
+  const url = (() => {
+    try {
+      return new URL(String(req.url || '/'), 'http://127.0.0.1');
+    } catch (e) {
+      return new URL('http://127.0.0.1/');
+    }
+  })();
+  const pathname = url.pathname;
 
   if (pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -373,6 +490,25 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (pathname === '/login' || pathname === '/login/') {
+    if (!AUTH_ENABLED) {
+      redirect(res, '/');
+      return;
+    }
+    const auth = getAuthStatus(req);
+    if (auth.authed) {
+      redirect(res, '/');
+      return;
+    }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      res.writeHead(405, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end('Method Not Allowed');
+      return;
+    }
+    html(res, 200, renderLoginPage());
+    return;
+  }
+
   if (pathname.startsWith('/v1/')) {
     const auth = getAuthStatus(req);
     if (auth.enabled && !auth.authed) {
@@ -382,6 +518,19 @@ const server = http.createServer(async (req, res) => {
     }
     proxyToUpstream(req, res);
     return;
+  }
+
+  if (AUTH_ENABLED) {
+    const auth = getAuthStatus(req);
+    if (!auth.authed) {
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        const next = `${pathname}${url.search || ''}`;
+        redirect(res, `/login?next=${encodeURIComponent(next)}`);
+        return;
+      }
+      json(res, 401, { error: 'Unauthorized' });
+      return;
+    }
   }
 
   if (req.method !== 'GET' && req.method !== 'HEAD') {
