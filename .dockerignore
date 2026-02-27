@@ -1,0 +1,12 @@
+.git
+.github
+node_modules
+dist
+release
+.npm-cache
+upstream-sora2api
+electron
+
+.env
+.env.*
+*.log

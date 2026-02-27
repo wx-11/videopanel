@@ -81,6 +81,39 @@ API Key: 你的访问凭证。
 
 注意：不要把 sora2api 的 API Key 写在前端 `.env` 里（会被打包进浏览器可见的 JS）。推荐由 OpenResty 反代注入 Bearer Key。
 
+## Docker 部署（推荐配合 OpenResty 反代）
+
+该项目是纯前端静态站，Docker 负责把前端构建成 `dist/` 并用 Nginx 提供静态服务。
+
+1) 构建镜像（是否开启“访问鉴权登录”由构建参数决定）
+
+```bash
+docker build \
+  --build-arg VITE_AUTH_ENABLED=true \
+  --build-arg VITE_AUTH_USERNAME=internal \
+  -t sora2-manager:latest .
+```
+
+2) 运行容器
+
+```bash
+docker run -d --name sora2-manager -p 8080:80 sora2-manager:latest
+```
+
+3) （可选）用 docker compose
+
+```bash
+PORT=8080 VITE_AUTH_ENABLED=true VITE_AUTH_USERNAME=internal docker compose up -d --build
+```
+
+4) OpenResty 反代建议
+
+- 建议把 `/` 反代到前端容器（例如 `http://127.0.0.1:8080`）
+- 把 `/v1/` 反代到 sora2api（另一台服务器），并只对 `/v1/*` 开启 Basic Auth；认证通过后再把 `Authorization` 覆盖为 Bearer key 转发给上游
+- 流式要关缓冲：`proxy_buffering off;`，并调大超时与 `client_max_body_size`
+
+注意：`VITE_AUTH_ENABLED` 属于 Vite 构建时变量，修改后需要重新 build 镜像/重新 build 前端。
+
 # ⚖️ 免责声明
 
 本程序仅作为一个 API 客户端工具。生成的视频内容版权及其合规性由 API 提供方及使用者本人负责。请在遵守当地法律法规的前提下使用。
