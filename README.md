@@ -71,6 +71,16 @@ API Key: 你的访问凭证。
 提交间隔: 两次请求之间的冷却时间（非代理池建议设为6s+，若采用代理池可适当减少）。
 注意！需要在sora2api中启用缓存和开启无水印模式。
 
+## 可选：网关鉴权（内部统一密码）
+
+如果你使用 OpenResty 反代并对 `/v1/*` 开启 Basic Auth，可以在前端启用“鉴权登录”（默认不开启，方便本地使用）：
+
+1. 复制 `.env.example` 为 `.env`
+2. 设置：`VITE_AUTH_ENABLED=true`、`VITE_AUTH_USERNAME=internal`
+3. 重新构建并部署前端
+
+注意：不要把 sora2api 的 API Key 写在前端 `.env` 里（会被打包进浏览器可见的 JS）。推荐由 OpenResty 反代注入 Bearer Key。
+
 # ⚖️ 免责声明
 
 本程序仅作为一个 API 客户端工具。生成的视频内容版权及其合规性由 API 提供方及使用者本人负责。请在遵守当地法律法规的前提下使用。

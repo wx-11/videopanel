@@ -75,6 +75,7 @@ const STORAGE_KEYS = {
   queue: 'sora2_manager_queue_v1',
   projects: 'sora2_manager_projects_v1',
   ui: 'sora2_manager_ui_v1',
+  gatewayAuthPassword: 'sora2_manager_gateway_basic_password_v1',
 };
 
 const MAX_SAVED_TASKS = 200;
@@ -98,9 +99,48 @@ const safeJsonParse = (value, fallback) => {
   }
 };
 
+const envFlag = (value, fallback = false) => {
+  const str = String(value ?? '').trim().toLowerCase();
+  if (!str) return fallback;
+  return str === '1' || str === 'true' || str === 'yes' || str === 'on';
+};
+
+const GATEWAY_AUTH = {
+  enabled: envFlag(import.meta?.env?.VITE_AUTH_ENABLED, false),
+  username: String(import.meta?.env?.VITE_AUTH_USERNAME || 'internal') || 'internal',
+};
+
+const toBase64 = (value) => {
+  const str = String(value ?? '');
+  try {
+    return btoa(str);
+  } catch (e) {
+    try {
+      const bytes = new TextEncoder().encode(str);
+      let binary = '';
+      bytes.forEach((b) => { binary += String.fromCharCode(b); });
+      return btoa(binary);
+    } catch (err) {
+      return '';
+    }
+  }
+};
+
+const inferDefaultBaseUrl = () => {
+  try {
+    if (typeof window === 'undefined') return 'http://localhost:8000/v1/chat/completions';
+    const protocol = window.location?.protocol;
+    const hostname = window.location?.hostname;
+    const isHttp = protocol === 'http:' || protocol === 'https:';
+    const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
+    if (isHttp && hostname && !isLocalHost) return '/v1/chat/completions';
+  } catch (e) { }
+  return 'http://localhost:8000/v1/chat/completions';
+};
+
 const DEFAULT_CONFIG = {
-  baseUrl: 'http://localhost:8000/v1/chat/completions',
-  apiKey: 'han1234',
+  baseUrl: inferDefaultBaseUrl(),
+  apiKey: '',
   maxConcurrent: 3,
   taskInterval: 1.0,
 };
@@ -437,6 +477,17 @@ export default function App() {
 
   // --- 全局配置 ---
   const [config, setConfig] = useState(() => getInitialConfig());
+  const [gatewayPassword, setGatewayPassword] = useState(() => {
+    if (!GATEWAY_AUTH.enabled) return '';
+    if (typeof window === 'undefined' || !window.localStorage) return '';
+    try {
+      return String(window.localStorage.getItem(STORAGE_KEYS.gatewayAuthPassword) || '');
+    } catch (e) {
+      return '';
+    }
+  });
+  const [showGatewayAuthModal, setShowGatewayAuthModal] = useState(false);
+  const [gatewayPasswordDraft, setGatewayPasswordDraft] = useState('');
 
   // --- 项目管理状态 ---
   const [projects, setProjects] = useState(() => getInitialProjects());
@@ -498,6 +549,62 @@ export default function App() {
   const persistUiTimer = useRef(null);
   const didMigrateQueueProjectIds = useRef(false);
 
+  const isGatewayAuthed = !GATEWAY_AUTH.enabled || Boolean(String(gatewayPassword || '').trim());
+
+  const openGatewayAuthModal = () => {
+    setGatewayPasswordDraft(String(gatewayPassword || ''));
+    setShowGatewayAuthModal(true);
+  };
+
+  const saveGatewayPassword = () => {
+    const nextPassword = String(gatewayPasswordDraft || '').trim();
+    setGatewayPassword(nextPassword);
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        if (nextPassword) window.localStorage.setItem(STORAGE_KEYS.gatewayAuthPassword, nextPassword);
+        else window.localStorage.removeItem(STORAGE_KEYS.gatewayAuthPassword);
+      }
+    } catch (e) { }
+    setShowGatewayAuthModal(false);
+  };
+
+  const clearGatewayPassword = () => {
+    setGatewayPassword('');
+    setGatewayPasswordDraft('');
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(STORAGE_KEYS.gatewayAuthPassword);
+      }
+    } catch (e) { }
+    setShowGatewayAuthModal(false);
+  };
+
+  const getAuthorizationHeader = () => {
+    if (GATEWAY_AUTH.enabled) {
+      const password = String(gatewayPassword || '').trim();
+      if (password) {
+        const token = toBase64(`${GATEWAY_AUTH.username}:${password}`);
+        if (token) return `Basic ${token}`;
+      }
+    }
+
+    const apiKey = String(config.apiKey || '').trim();
+    return apiKey ? `Bearer ${apiKey}` : null;
+  };
+
+  const buildRequestHeaders = () => {
+    const headers = { 'Content-Type': 'application/json' };
+    const authHeader = getAuthorizationHeader();
+    if (authHeader) headers.Authorization = authHeader;
+    return headers;
+  };
+
+  const ensureGatewayAuthed = () => {
+    if (isGatewayAuthed) return true;
+    openGatewayAuthModal();
+    return false;
+  };
+
   // --- 辅助函数：复制并显示 Toast ---
   const handleCopy = (text) => {
       if (!text) return;
@@ -520,6 +627,12 @@ export default function App() {
     };
     const timer = setTimeout(checkConnection, 500);
     return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (GATEWAY_AUTH.enabled && !isGatewayAuthed) {
+      setShowGatewayAuthModal(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -711,6 +824,8 @@ export default function App() {
     const runningCount = queue.filter(t => t.status === 'GENERATING' || t.status === 'STARTING' || t.status === 'PROCESSING' || t.status === 'CACHING').length;
     const pendingTasks = queue.filter(t => t.status === 'PENDING');
 
+    if (GATEWAY_AUTH.enabled && !isGatewayAuthed) return;
+
     if (runningCount < parseInt(config.maxConcurrent) && pendingTasks.length > 0) {
         const now = Date.now();
         const intervalMs = (parseFloat(config.taskInterval) || 1.0) * 1000;
@@ -729,7 +844,7 @@ export default function App() {
             processTask(nextTask.id, nextTask.prompt, nextTask.image, nextTask.generationType, nextTask.modelUsed, nextTask.mediaType);
         }
     }
-  }, [queue, config.maxConcurrent, config.taskInterval, tick]);
+  }, [queue, config.maxConcurrent, config.taskInterval, tick, isGatewayAuthed]);
 
   useEffect(() => {
       const proj = projects.find(p => p.id === activeProjectId);
@@ -784,7 +899,11 @@ export default function App() {
             previewJson.messages[0].content[1].image_url.url = "data:image/...[已截断]";
         }
     }
-    const cmd = `curl -X POST "${config.baseUrl}" \\\n  -H "Authorization: Bearer ${config.apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(previewJson, null, 2)}'`;
+    const resolvedUrl = typeof window !== 'undefined' && String(config.baseUrl || '').startsWith('/')
+        ? `${window.location.origin}${String(config.baseUrl)}`
+        : String(config.baseUrl || '');
+    const authLine = config.apiKey ? `  -H "Authorization: Bearer ${config.apiKey}" \\\n` : '';
+    const cmd = `curl -X POST "${resolvedUrl}" \\\n${authLine}  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(previewJson, null, 2)}'`;
     setCurlPreview(cmd);
   }, [config, activeProject, selectedModelName, generationType, workMode]);
 
@@ -874,6 +993,7 @@ export default function App() {
   };
 
   const handleBatchAddToQueue = () => {
+      if (!ensureGatewayAuthed()) return;
       if (batchMode === 'script') {
           const validScripts = batchScripts.filter(s => s.trim() !== '');
           if (validScripts.length === 0) return;
@@ -964,6 +1084,7 @@ export default function App() {
   };
 
   const sendComposerMessage = () => {
+    if (!ensureGatewayAuthed()) return;
     const prompt = String(composerText || '').trim();
     const hasImage = Boolean(composerImage);
     addToQueue(prompt, '', {
@@ -980,6 +1101,7 @@ export default function App() {
   };
 
   const handleAddSingleTask = () => {
+    if (!ensureGatewayAuthed()) return;
     const prompt = String(activeProject?.prompt || '').trim();
     addToQueue(prompt, '', {
       mediaType: workMode,
@@ -1129,13 +1251,16 @@ export default function App() {
                   const payload = { model: String(taskModel || 'gpt-image'), messages: [{ role: "user", content: content }], stream: true };
                   const response = await fetch(config.baseUrl, {
                       method: 'POST',
-                      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` },
+                      headers: buildRequestHeaders(),
                       body: JSON.stringify(payload)
                   });
 
                   if (!response.ok) {
                       let errorMsg = `HTTP ${response.status}`;
                       try { const errorText = await response.text(); if (errorText) errorMsg = errorText; } catch (e) { }
+                      if ((response.status === 401 || response.status === 403) && GATEWAY_AUTH.enabled) {
+                        setShowGatewayAuthModal(true);
+                      }
                       throw new Error(errorMsg);
                   }
 
@@ -1251,12 +1376,15 @@ export default function App() {
           const payload = { model: taskModel, messages: [{ role: "user", content: content }], stream: true };
           const response = await fetch(config.baseUrl, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` },
+              headers: buildRequestHeaders(),
               body: JSON.stringify(payload)
           });
           if (!response.ok) {
               let errorMsg = `HTTP ${response.status}`;
               try { const errorText = await response.text(); if (errorText) errorMsg = errorText; } catch (e) { }
+              if ((response.status === 401 || response.status === 403) && GATEWAY_AUTH.enabled) {
+                setShowGatewayAuthModal(true);
+              }
               throw new Error(errorMsg);
           }
           const reader = response.body.getReader();
@@ -1564,13 +1692,13 @@ export default function App() {
                 <button
                   type="button"
                   onClick={sendComposerMessage}
-                  disabled={!String(composerText || '').trim()}
+                  disabled={!String(composerText || '').trim() || !isGatewayAuthed}
                   className={`shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                    !String(composerText || '').trim()
+                    (!String(composerText || '').trim() || !isGatewayAuthed)
                       ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                       : 'bg-emerald-600 text-white hover:bg-emerald-700'
                   }`}
-                  title="发送"
+                  title={!isGatewayAuthed ? '请先输入访问密码' : '发送'}
                 >
                   <IconArrowUp size={18} />
                 </button>
@@ -1669,7 +1797,13 @@ export default function App() {
                             <div className="flex justify-end">
                                 <button
                                     onClick={handleAddSingleTask}
-                                    className={`px-5 py-2.5 rounded-lg text-sm font-bold text-white shadow-sm transition-all ${workMode === 'image' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                    disabled={!isGatewayAuthed}
+                                    className={`px-5 py-2.5 rounded-lg text-sm font-bold shadow-sm transition-all ${
+                                      !isGatewayAuthed
+                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                        : (workMode === 'image' ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-blue-600 text-white hover:bg-blue-700')
+                                    }`}
+                                    title={!isGatewayAuthed ? '请先输入访问密码' : undefined}
                                 >
                                     {workMode === 'image' ? '发送' : '加入队列'}
                                 </button>
@@ -2185,9 +2319,34 @@ export default function App() {
                                   <input type="text" value={String(config.baseUrl || '')} onChange={(e) => setConfig({...config, baseUrl: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
                               </div>
                               <div className="space-y-2">
-                                  <label className="text-xs font-semibold text-gray-500 uppercase">API 密钥 (Key)</label>
-                                  <input type="password" value={String(config.apiKey || '')} onChange={(e) => setConfig({...config, apiKey: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
+                                  <label className="text-xs font-semibold text-gray-500 uppercase">API 密钥 (Key，可选)</label>
+                                  <input type="password" value={String(config.apiKey || '')} onChange={(e) => setConfig({...config, apiKey: e.target.value})} placeholder="留空表示无需前端鉴权 / 由服务端注入" className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
                               </div>
+                              {GATEWAY_AUTH.enabled && (
+                                  <div className="space-y-2 md:col-span-2">
+                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">访问鉴权 (Basic)</label>
+                                      <div className="flex items-center justify-between gap-3 bg-gray-50 border border-gray-200 rounded-lg px-3 py-2.5">
+                                          <div className="min-w-0">
+                                              <div className="text-xs text-gray-700 font-medium truncate">
+                                                  用户名：{String(GATEWAY_AUTH.username)} · {isGatewayAuthed ? '已设置访问密码' : '未设置访问密码'}
+                                              </div>
+                                              <div className="text-[10px] text-gray-400 mt-1">
+                                                  开启后，请求将携带 Basic Authorization（推荐配合 OpenResty 仅对 /v1/* 启用 auth_basic）。
+                                              </div>
+                                          </div>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                              <button onClick={openGatewayAuthModal} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">
+                                                  {isGatewayAuthed ? '修改' : '设置'}
+                                              </button>
+                                              {isGatewayAuthed && (
+                                                  <button onClick={clearGatewayPassword} className="px-3 py-1.5 text-xs font-bold bg-white border border-gray-300 text-red-600 rounded-lg hover:bg-red-50">
+                                                      清除
+                                                  </button>
+                                              )}
+                                          </div>
+                                      </div>
+                                  </div>
+                              )}
                               <div className="space-y-2">
                                   <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLayers size={12}/> 并发控制</label>
                                   <input type="number" min="1" value={config.maxConcurrent} onChange={(e) => setConfig({...config, maxConcurrent: Math.max(1, parseInt(e.target.value) || 1)})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500" />
@@ -2205,6 +2364,87 @@ export default function App() {
 
                   <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-white">
                       <button onClick={() => setShowSettings(false)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-sm transition-all">保存并关闭</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {GATEWAY_AUTH.enabled && showGatewayAuthModal && (
+          <div
+              className="fixed inset-0 z-[65] flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+              onClick={() => setShowGatewayAuthModal(false)}
+          >
+              <div
+                  className="bg-white border border-gray-200 rounded-xl shadow-2xl w-full max-w-md overflow-hidden"
+                  onClick={(e) => e.stopPropagation()}
+              >
+                  <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 gap-3">
+                      <div className="min-w-0">
+                          <div className="text-sm font-bold text-gray-900">访问鉴权</div>
+                          <div className="text-[11px] text-gray-500 mt-1 truncate">
+                              该站点已开启访问鉴权，请输入访问密码后继续。
+                          </div>
+                      </div>
+                      <button
+                          onClick={() => setShowGatewayAuthModal(false)}
+                          className="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                          title="关闭"
+                      >
+                          <IconX size={18} />
+                      </button>
+                  </div>
+
+                  <div className="px-5 py-4 space-y-3">
+                      <div className="text-[11px] text-gray-500">
+                          用户名：<span className="font-mono text-gray-700">{String(GATEWAY_AUTH.username)}</span>
+                          <span className="text-gray-400">（可通过 .env 的 VITE_AUTH_USERNAME 修改）</span>
+                      </div>
+                      <div className="space-y-2">
+                          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">访问密码</label>
+                          <input
+                              type="password"
+                              autoFocus
+                              value={String(gatewayPasswordDraft || '')}
+                              onChange={(e) => setGatewayPasswordDraft(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key !== 'Enter') return;
+                                if (e.isComposing || e.nativeEvent?.isComposing) return;
+                                if (!String(gatewayPasswordDraft || '').trim()) return;
+                                e.preventDefault();
+                                saveGatewayPassword();
+                              }}
+                              placeholder="请输入访问密码"
+                              className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all"
+                          />
+                      </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 px-5 py-4 border-t border-gray-100 bg-gray-50">
+                      {Boolean(String(gatewayPassword || '').trim()) && (
+                          <button
+                              onClick={clearGatewayPassword}
+                              className="px-4 py-2 text-xs font-bold bg-white border border-gray-300 text-red-600 rounded-lg hover:bg-red-50"
+                          >
+                              清除
+                          </button>
+                      )}
+                      <button
+                          onClick={() => setShowGatewayAuthModal(false)}
+                          className="px-4 py-2 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                      >
+                          取消
+                      </button>
+                      <button
+                          onClick={saveGatewayPassword}
+                          disabled={!String(gatewayPasswordDraft || '').trim()}
+                          className={`px-4 py-2 text-xs font-bold rounded-lg ${
+                            !String(gatewayPasswordDraft || '').trim()
+                              ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                              : 'bg-blue-600 text-white hover:bg-blue-700'
+                          }`}
+                      >
+                          保存并继续
+                      </button>
                   </div>
               </div>
           </div>
