@@ -443,6 +443,7 @@ export default function App() {
   const [activeProjectId, setActiveProjectId] = useState(() => initialUiState.activeProjectId);
   const [editingProjectId, setEditingProjectId] = useState(null);
   const [editName, setEditName] = useState('');
+  const [pendingDeleteProject, setPendingDeleteProject] = useState(null);
 
   // --- 当前项目输入状态 ---
   const [workMode, setWorkMode] = useState(() => initialUiState.workMode);
@@ -796,13 +797,29 @@ export default function App() {
       setActiveProjectId(newId);
   };
 
+  const performDeleteProject = (id) => {
+      if (!Number.isFinite(id)) return;
+
+      setProjects((prevProjects) => {
+          if (!Array.isArray(prevProjects) || prevProjects.length <= 1) return prevProjects;
+          const nextProjects = prevProjects.filter((p) => p.id !== id);
+          if (nextProjects.length === 0) return prevProjects;
+
+          setActiveProjectId((prevActiveId) => (prevActiveId === id ? nextProjects[0].id : prevActiveId));
+          return nextProjects;
+      });
+
+      idbDeleteProjectImage(id);
+  };
+
   const handleDeleteProject = (e, id) => {
       e.stopPropagation();
-      if (projects.length <= 1) return; 
-      const newProjects = projects.filter(p => p.id !== id);
-      setProjects(newProjects);
-      if (activeProjectId === id) setActiveProjectId(newProjects[0].id);
-      idbDeleteProjectImage(id);
+      if (projects.length <= 1) return;
+      const target = projects.find((p) => p.id === id);
+      setPendingDeleteProject({
+          id,
+          name: target?.name || `项目 ${id}`,
+      });
   };
 
   const startRenaming = (e, project) => {
@@ -2188,6 +2205,57 @@ export default function App() {
 
                   <div className="flex justify-end gap-3 px-6 py-4 border-t border-gray-100 bg-white">
                       <button onClick={() => setShowSettings(false)} className="px-5 py-2 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-sm transition-all">保存并关闭</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {pendingDeleteProject && (
+          <div
+              className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-150"
+              onClick={() => setPendingDeleteProject(null)}
+          >
+              <div
+                  className="bg-white border border-gray-200 rounded-xl shadow-2xl w-full max-w-md overflow-hidden"
+                  onClick={(e) => e.stopPropagation()}
+              >
+                  <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 gap-3">
+                      <div className="min-w-0">
+                          <div className="text-sm font-bold text-gray-900">确认删除项目？</div>
+                          <div className="text-[11px] text-gray-500 mt-1 truncate">
+                              {String(pendingDeleteProject?.name || '')}
+                          </div>
+                      </div>
+                      <button
+                          onClick={() => setPendingDeleteProject(null)}
+                          className="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                          title="关闭"
+                      >
+                          <IconX size={18} />
+                      </button>
+                  </div>
+
+                  <div className="px-5 py-4 text-sm text-gray-700">
+                      删除后将无法恢复，并清除该项目的默认图片。
+                  </div>
+
+                  <div className="flex justify-end gap-2 px-5 py-4 border-t border-gray-100 bg-gray-50">
+                      <button
+                          onClick={() => setPendingDeleteProject(null)}
+                          className="px-4 py-2 text-xs font-bold bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50"
+                      >
+                          取消
+                      </button>
+                      <button
+                          onClick={() => {
+                              const id = pendingDeleteProject?.id;
+                              setPendingDeleteProject(null);
+                              if (Number.isFinite(id)) performDeleteProject(id);
+                          }}
+                          className="px-4 py-2 text-xs font-bold bg-red-600 text-white rounded-lg hover:bg-red-700"
+                      >
+                          确认删除
+                      </button>
                   </div>
               </div>
           </div>
