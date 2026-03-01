@@ -47,6 +47,9 @@ const AUTH_SESSION_DAYS = Math.max(1, parseInt(process.env.AUTH_SESSION_DAYS || 
 const SORA2API_BASE_URL = String(process.env.SORA2API_BASE_URL || '').trim();
 const SORA2API_KEY = String(process.env.SORA2API_KEY || '').trim();
 
+const COMFYUI2API_BASE_URL = String(process.env.COMFYUI2API_BASE_URL || '').trim();
+const COMFYUI2API_TOKEN = String(process.env.COMFYUI2API_TOKEN || '').trim();
+
 const PORT = Math.max(1, parseInt(process.env.PORT || '18130', 10) || 18130);
 const HOST = String(process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
 
@@ -288,6 +291,17 @@ const getUpstreamUrl = (reqUrl) => {
   return new URL(finalPath, base.origin);
 };
 
+const getComfyuiUpstreamUrl = (reqUrl) => {
+  if (!COMFYUI2API_BASE_URL) return null;
+  const base = new URL(COMFYUI2API_BASE_URL);
+  const basePath = base.pathname && base.pathname !== '/' ? base.pathname.replace(/\/+$/g, '') : '';
+  const incoming = String(reqUrl || '/');
+  const incomingPath = incoming.startsWith('/') ? incoming : `/${incoming}`;
+  const hasPrefix = basePath && incomingPath.startsWith(`${basePath}/`);
+  const finalPath = hasPrefix ? incomingPath : `${basePath}${incomingPath}`;
+  return new URL(finalPath, base.origin);
+};
+
 const proxyToUpstream = (req, res) => {
   const upstream = getUpstreamUrl(req.url);
   if (!upstream) {
@@ -309,6 +323,59 @@ const proxyToUpstream = (req, res) => {
   delete headers['sec-websocket-extensions'];
 
   if (SORA2API_KEY) headers.authorization = `Bearer ${SORA2API_KEY}`;
+
+  const proxyReq = transport.request(
+    {
+      protocol: upstream.protocol,
+      hostname: upstream.hostname,
+      port: upstream.port || (isHttps ? 443 : 80),
+      method: req.method,
+      path: `${upstream.pathname}${upstream.search}`,
+      headers,
+    },
+    (proxyRes) => {
+      const responseHeaders = { ...proxyRes.headers };
+      delete responseHeaders['transfer-encoding'];
+
+      res.writeHead(proxyRes.statusCode || 500, responseHeaders);
+      proxyRes.pipe(res);
+    },
+  );
+
+  proxyReq.on('error', (err) => {
+    if (res.headersSent) return;
+    json(res, 502, { error: 'Upstream request failed', message: String(err?.message || err) });
+  });
+
+  req.on('aborted', () => {
+    try { proxyReq.destroy(); } catch (e) { }
+  });
+
+  req.pipe(proxyReq);
+};
+
+const proxyToComfyuiUpstream = (req, res) => {
+  const incoming = String(req.url || '/').replace(/^\/comfyui(?=\/|$)/, '') || '/';
+  const upstream = getComfyuiUpstreamUrl(incoming);
+  if (!upstream) {
+    json(res, 500, { error: 'Missing COMFYUI2API_BASE_URL' });
+    return;
+  }
+
+  const isHttps = upstream.protocol === 'https:';
+  const transport = isHttps ? https : http;
+
+  const headers = { ...req.headers };
+  delete headers.host;
+  delete headers.connection;
+  delete headers.upgrade;
+  delete headers['proxy-connection'];
+  delete headers['sec-websocket-key'];
+  delete headers['sec-websocket-version'];
+  delete headers['sec-websocket-protocol'];
+  delete headers['sec-websocket-extensions'];
+
+  if (COMFYUI2API_TOKEN) headers.authorization = `Bearer ${COMFYUI2API_TOKEN}`;
 
   const proxyReq = transport.request(
     {
@@ -509,6 +576,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (pathname.startsWith('/comfyui/v1/')) {
+    const auth = getAuthStatus(req);
+    if (auth.enabled && !auth.authed) {
+      res.setHeader('X-Sora2-Manager-Auth', 'required');
+      json(res, 401, { error: 'Unauthorized' });
+      return;
+    }
+    proxyToComfyuiUpstream(req, res);
+    return;
+  }
+
   if (pathname.startsWith('/v1/')) {
     const auth = getAuthStatus(req);
     if (auth.enabled && !auth.authed) {
@@ -549,4 +627,6 @@ server.listen(PORT, HOST, () => {
   if (AUTH_ENABLED) console.log(`[sora2-manager] auth enabled: cookie=${AUTH_COOKIE_NAME}, sessionDays=${AUTH_SESSION_DAYS}`);
   // eslint-disable-next-line no-console
   if (SORA2API_BASE_URL) console.log(`[sora2-manager] upstream: ${SORA2API_BASE_URL}`);
+  // eslint-disable-next-line no-console
+  if (COMFYUI2API_BASE_URL) console.log(`[sora2-manager] comfyui2api upstream: ${COMFYUI2API_BASE_URL}`);
 });

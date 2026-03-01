@@ -47,6 +47,28 @@ export const pickComfyuiVideoUrl = (job) => {
   return null;
 };
 
+export const parseComfyuiModelsList = (payload) => {
+  if (!payload) return [];
+
+  const items = (() => {
+    if (Array.isArray(payload)) return payload;
+    const data = payload?.data;
+    return Array.isArray(data) ? data : [];
+  })();
+
+  return items.map((item) => {
+    if (!item) return null;
+    if (typeof item === 'string') {
+      const id = item.trim();
+      return id ? { id, kind: null } : null;
+    }
+    const id = typeof item?.id === 'string' ? item.id.trim() : '';
+    if (!id) return null;
+    const kind = typeof item?.metadata?.kind === 'string' ? item.metadata.kind.trim() : '';
+    return { id, kind: kind || null };
+  }).filter(Boolean);
+};
+
 export const parseOpenAiLikeErrorMessage = (payloadOrText) => {
   if (!payloadOrText) return null;
 
@@ -71,4 +93,3 @@ export const parseOpenAiLikeErrorMessage = (payloadOrText) => {
 
   return null;
 };
-

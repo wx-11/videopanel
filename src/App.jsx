@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { comfyuiEndpoints, comfyuiProgressPercent, pickComfyuiVideoUrl, parseOpenAiLikeErrorMessage } from './comfyuiApi.js';
+import { comfyuiEndpoints, comfyuiProgressPercent, pickComfyuiVideoUrl, parseComfyuiModelsList, parseOpenAiLikeErrorMessage } from './comfyuiApi.js';
 import { detectUpstreamStreamFailure } from './streamErrors.js';
 
 // --- 图标组件 (Icons) ---
@@ -117,9 +117,32 @@ const inferDefaultBaseUrl = () => {
   return 'http://localhost:8000/v1/chat/completions';
 };
 
+const inferDefaultComfyuiBaseUrl = () => {
+  try {
+    const fromEnv = String(import.meta?.env?.VITE_COMFYUI2API_BASE_URL || '').trim();
+    if (fromEnv) return fromEnv;
+  } catch (e) { }
+
+  try {
+    if (typeof window === 'undefined') return 'http://127.0.0.1:8000';
+    const protocol = window.location?.protocol;
+    const hostname = window.location?.hostname;
+    const port = window.location?.port;
+    const isHttp = protocol === 'http:' || protocol === 'https:';
+    const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
+    const isViteDev = port === '5173' || port === '4173';
+    if (isHttp && hostname) {
+      if (!isLocalHost) return '/comfyui';
+      if (!isViteDev) return '/comfyui';
+    }
+  } catch (e) { }
+
+  return 'http://127.0.0.1:8000';
+};
+
 const DEFAULT_CONFIG = {
   baseUrl: inferDefaultBaseUrl(),
-  comfyuiBaseUrl: 'http://127.0.0.1:8000',
+  comfyuiBaseUrl: inferDefaultComfyuiBaseUrl(),
   apiKey: '',
   maxConcurrent: 3,
   taskInterval: 1.0,
@@ -486,6 +509,9 @@ export default function App() {
   const [activeProject, setActiveProject] = useState(() => projects.find(p => p.id === initialUiState.activeProjectId) || projects[0]);
   const [videoProvider, setVideoProvider] = useState(() => initialUiState.videoProvider || 'sora');
   const [comfyuiModel, setComfyuiModel] = useState(() => initialUiState.comfyuiModel || '');
+  const [comfyuiModels, setComfyuiModels] = useState([]);
+  const [comfyuiModelsLoading, setComfyuiModelsLoading] = useState(false);
+  const [comfyuiModelsError, setComfyuiModelsError] = useState('');
   const [orientation, setOrientation] = useState(() => initialUiState.orientation);
   const [duration, setDuration] = useState(() => initialUiState.duration);
   const [modelFamily, setModelFamily] = useState(() => initialUiState.modelFamily);
@@ -499,6 +525,10 @@ export default function App() {
   const selectedModelName = workMode === 'image' ? selectedImageModelName : selectedVideoModelName;
   const [generationType, setGenerationType] = useState(() => initialUiState.generationType); 
   const [recordsScope, setRecordsScope] = useState(() => initialUiState.recordsScope || 'project');
+
+  const desiredComfyuiWorkflowKind = generationType === 'image' ? 'img2video' : 'txt2video';
+  const comfyuiModelsForVideoKind = Array.isArray(comfyuiModels) ? comfyuiModels.filter((m) => String(m?.kind || '').toLowerCase() === desiredComfyuiWorkflowKind) : [];
+  const comfyuiWorkflowSuggestions = comfyuiModelsForVideoKind.length > 0 ? comfyuiModelsForVideoKind : (Array.isArray(comfyuiModels) ? comfyuiModels : []);
 
   // --- 批量生成状态 ---
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -630,6 +660,37 @@ export default function App() {
     return headers;
   };
 
+  const loadComfyuiModels = async () => {
+    try {
+      setComfyuiModelsError('');
+      setComfyuiModelsLoading(true);
+
+      const base = String(config?.comfyuiBaseUrl || '').trim();
+      if (!base) throw new Error('Missing ComfyUI2API Base URL');
+      const { models } = comfyuiEndpoints(base);
+
+      const res = await fetch(models, { headers: buildRequestHeaders() });
+      if (!res.ok) {
+        let errorMsg = `HTTP ${res.status}`;
+        try {
+          const errorText = await res.text();
+          errorMsg = parseOpenAiLikeErrorMessage(errorText) || errorText || errorMsg;
+        } catch (e) { }
+        throw new Error(errorMsg);
+      }
+
+      const payload = await res.json();
+      const list = parseComfyuiModelsList(payload).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      setComfyuiModels(list);
+      if (list.length === 0) setComfyuiModelsError('No workflows found from /v1/models');
+    } catch (e) {
+      setComfyuiModels([]);
+      setComfyuiModelsError(String(e?.message || e || 'Failed to load models'));
+    } finally {
+      setComfyuiModelsLoading(false);
+    }
+  };
+
   const ensureGatewayAuthed = () => {
     if (!gatewayAuthChecked) {
       refreshGatewayAuthStatus({ openModalOnNeed: true });
@@ -668,6 +729,21 @@ export default function App() {
   useEffect(() => {
     refreshGatewayAuthStatus({ openModalOnNeed: true });
   }, []);
+
+  useEffect(() => {
+    setComfyuiModels([]);
+    setComfyuiModelsError('');
+  }, [config.comfyuiBaseUrl]);
+
+  useEffect(() => {
+    if (workMode !== 'video') return;
+    if (videoProvider !== 'comfyui') return;
+    if (comfyuiModelsLoading) return;
+    if (Array.isArray(comfyuiModels) && comfyuiModels.length > 0) return;
+    const base = String(config?.comfyuiBaseUrl || '').trim();
+    if (!base) return;
+    loadComfyuiModels();
+  }, [workMode, videoProvider, config.comfyuiBaseUrl]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.localStorage) return;
@@ -1682,6 +1758,11 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-900 font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden relative">
+      <datalist id="comfyui-models-datalist">
+        {(Array.isArray(comfyuiWorkflowSuggestions) ? comfyuiWorkflowSuggestions : []).map((m) => (
+          <option key={String(m?.id || '')} value={String(m?.id || '')} label={m?.kind ? String(m.kind) : undefined} />
+        ))}
+      </datalist>
       {workMode === 'image' && (
         <>
           <header className="h-16 border-b border-gray-200 bg-white flex items-center justify-between px-6 z-10 shrink-0 shadow-sm">
@@ -2009,8 +2090,23 @@ export default function App() {
                             ) : (
                                 <div className="space-y-3">
                                     <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ComfyUI Workflow/Model (optional)</label>
-                                    <input type="text" value={String(comfyuiModel || '')} onChange={(e) => setComfyuiModel(e.target.value)} placeholder="留空使用 comfyui2api 默认工作流；可填：img2video.json" className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-blue-500 shadow-sm" />
-                                    <div className="text-[10px] text-gray-400">可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span></div>
+                                    <div className="flex items-center gap-2">
+                                      <input list="comfyui-models-datalist" type="text" value={String(comfyuiModel || '')} onChange={(e) => setComfyuiModel(e.target.value)} placeholder="留空使用 comfyui2api 默认工作流；可填：img2video.json" className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-blue-500 shadow-sm" />
+                                      <button onClick={loadComfyuiModels} disabled={comfyuiModelsLoading} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all flex items-center gap-2 ${comfyuiModelsLoading ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'}`}>
+                                        {comfyuiModelsLoading ? <IconLoader size={14} /> : <IconLink size={14} />}
+                                        {comfyuiModelsLoading ? '加载中' : '加载工作流'}
+                                      </button>
+                                    </div>
+                                    {comfyuiModelsError ? (
+                                      <div className="text-xs text-red-600">{String(comfyuiModelsError || '')}</div>
+                                    ) : (
+                                      <div className="text-[10px] text-gray-400">
+                                        可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span>（网关：<span className="font-mono">/comfyui/v1/models</span>）
+                                        {Array.isArray(comfyuiWorkflowSuggestions) && comfyuiWorkflowSuggestions.length > 0 && (
+                                          <span className="ml-2">已加载 {comfyuiWorkflowSuggestions.length} 个</span>
+                                        )}
+                                      </div>
+                                    )}
                                 </div>
                             )}
                             <div className="space-y-3">
@@ -2389,8 +2485,23 @@ export default function App() {
                                   ) : (
                                       <div className="space-y-2">
                                           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ComfyUI Workflow/Model (optional)</label>
-                                          <input type="text" value={String(comfyuiModel || '')} onChange={(e) => setComfyuiModel(e.target.value)} placeholder="留空使用 comfyui2api 默认工作流；可填：img2video.json" className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-blue-500 shadow-sm" />
-                                          <div className="text-[10px] text-gray-400">可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span></div>
+                                          <div className="flex items-center gap-2">
+                                            <input list="comfyui-models-datalist" type="text" value={String(comfyuiModel || '')} onChange={(e) => setComfyuiModel(e.target.value)} placeholder="留空使用 comfyui2api 默认工作流；可填：img2video.json" className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-blue-500 shadow-sm" />
+                                            <button onClick={loadComfyuiModels} disabled={comfyuiModelsLoading} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all flex items-center gap-2 ${comfyuiModelsLoading ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'}`}>
+                                              {comfyuiModelsLoading ? <IconLoader size={14} /> : <IconLink size={14} />}
+                                              {comfyuiModelsLoading ? '加载中' : '加载工作流'}
+                                            </button>
+                                          </div>
+                                          {comfyuiModelsError ? (
+                                            <div className="text-xs text-red-600">{String(comfyuiModelsError || '')}</div>
+                                          ) : (
+                                            <div className="text-[10px] text-gray-400">
+                                              可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span>（网关：<span className="font-mono">/comfyui/v1/models</span>）
+                                              {Array.isArray(comfyuiWorkflowSuggestions) && comfyuiWorkflowSuggestions.length > 0 && (
+                                                <span className="ml-2">已加载 {comfyuiWorkflowSuggestions.length} 个</span>
+                                              )}
+                                            </div>
+                                          )}
                                       </div>
                                   )}
                                   <div className="space-y-4">

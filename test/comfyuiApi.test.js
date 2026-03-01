@@ -5,6 +5,7 @@ import {
   ensureComfyuiV1BaseUrl,
   comfyuiProgressPercent,
   pickComfyuiVideoUrl,
+  parseComfyuiModelsList,
   parseOpenAiLikeErrorMessage,
 } from '../src/comfyuiApi.js';
 
@@ -37,3 +38,17 @@ test('parseOpenAiLikeErrorMessage extracts error.message', () => {
   assert.equal(parseOpenAiLikeErrorMessage(JSON.stringify(json)), 'bad request');
 });
 
+test('parseComfyuiModelsList extracts OpenAI-like models list', () => {
+  const payload = {
+    object: 'list',
+    data: [
+      { id: 'txt2video.json', object: 'model', metadata: { kind: 'txt2video' } },
+      { id: 'img2video.json', object: 'model', metadata: { kind: 'img2video' } },
+      { id: '', object: 'model', metadata: { kind: 'txt2video' } },
+    ],
+  };
+  assert.deepEqual(parseComfyuiModelsList(payload), [
+    { id: 'txt2video.json', kind: 'txt2video' },
+    { id: 'img2video.json', kind: 'img2video' },
+  ]);
+});
