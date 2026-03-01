@@ -529,6 +529,8 @@ export default function App() {
   const desiredComfyuiWorkflowKind = generationType === 'image' ? 'img2video' : 'txt2video';
   const comfyuiModelsForVideoKind = Array.isArray(comfyuiModels) ? comfyuiModels.filter((m) => String(m?.kind || '').toLowerCase() === desiredComfyuiWorkflowKind) : [];
   const comfyuiWorkflowSuggestions = comfyuiModelsForVideoKind.length > 0 ? comfyuiModelsForVideoKind : (Array.isArray(comfyuiModels) ? comfyuiModels : []);
+  const comfyuiModelsTotalCount = Array.isArray(comfyuiModels) ? comfyuiModels.length : 0;
+  const comfyuiModelsShowingFiltered = comfyuiModelsTotalCount > 0 && comfyuiModelsForVideoKind.length > 0 && comfyuiModelsForVideoKind.length < comfyuiModelsTotalCount;
 
   // --- 批量生成状态 ---
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -2102,8 +2104,8 @@ export default function App() {
                                     ) : (
                                       <div className="text-[10px] text-gray-400">
                                         可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span>（网关：<span className="font-mono">/comfyui/v1/models</span>）
-                                        {Array.isArray(comfyuiWorkflowSuggestions) && comfyuiWorkflowSuggestions.length > 0 && (
-                                          <span className="ml-2">已加载 {comfyuiWorkflowSuggestions.length} 个</span>
+                                        {comfyuiModelsTotalCount > 0 && (
+                                          <span className="ml-2">已加载 {comfyuiModelsTotalCount} 个{comfyuiModelsShowingFiltered ? `（当前仅显示 ${desiredComfyuiWorkflowKind}：${comfyuiModelsForVideoKind.length} 个）` : ''}</span>
                                         )}
                                       </div>
                                     )}
@@ -2497,8 +2499,8 @@ export default function App() {
                                           ) : (
                                             <div className="text-[10px] text-gray-400">
                                               可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span>（网关：<span className="font-mono">/comfyui/v1/models</span>）
-                                              {Array.isArray(comfyuiWorkflowSuggestions) && comfyuiWorkflowSuggestions.length > 0 && (
-                                                <span className="ml-2">已加载 {comfyuiWorkflowSuggestions.length} 个</span>
+                                              {comfyuiModelsTotalCount > 0 && (
+                                                <span className="ml-2">已加载 {comfyuiModelsTotalCount} 个{comfyuiModelsShowingFiltered ? `（当前仅显示 ${desiredComfyuiWorkflowKind}：${comfyuiModelsForVideoKind.length} 个）` : ''}</span>
                                               )}
                                             </div>
                                           )}
