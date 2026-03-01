@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { detectUpstreamStreamFailure } from './streamErrors.js';
 
 // --- 图标组件 (Icons) ---
 const IconPlus = ({ size = 16, className = "" }) => (
@@ -1304,23 +1305,27 @@ export default function App() {
 
                               const jsonStr = trimmed.replace(/^data:\s?/, '');
                               let combinedChunk = '';
-                              try {
-                                  const data = JSON.parse(jsonStr);
-                                  if (data.error) throw new Error(data.error.message || 'API Error');
-                                  const delta = data.choices?.[0]?.delta;
-                                  combinedChunk = String((delta?.content || '') + (delta?.reasoning_content || ''));
-                              } catch (e) {
-                                  combinedChunk = jsonStr;
-                              }
+                               try {
+                                   const data = JSON.parse(jsonStr);
+                                   if (data.error) throw new Error(data.error.message || 'API Error');
+                                   const delta = data.choices?.[0]?.delta;
+                                   combinedChunk = String((delta?.content || '') + (delta?.reasoning_content || ''));
+                               } catch (e) {
+                                   if (!(e instanceof SyntaxError)) throw e;
+                                   combinedChunk = jsonStr;
+                               }
 
                               if (!combinedChunk) continue;
                               if (hasResolvedImage) continue;
 
-                              hasReceivedData = true;
-                              accumulatedContent += combinedChunk;
-                              if (accumulatedContent.length > 50_000) accumulatedContent = accumulatedContent.slice(-50_000);
+                               hasReceivedData = true;
+                               accumulatedContent += combinedChunk;
+                               if (accumulatedContent.length > 50_000) accumulatedContent = accumulatedContent.slice(-50_000);
 
-                              updateTask(taskId, { stage: 'Generating', progress: 50, streamLog: accumulatedContent.length > 1000 ? '...' + accumulatedContent.slice(-1000) : accumulatedContent });
+                               const maybeFailure = detectUpstreamStreamFailure(accumulatedContent);
+                               if (maybeFailure) throw new Error(maybeFailure);
+
+                               updateTask(taskId, { stage: 'Generating', progress: 50, streamLog: accumulatedContent.length > 1000 ? '...' + accumulatedContent.slice(-1000) : accumulatedContent });
 
                               const candidate = extractImageFromText(combinedChunk) || extractImageFromText(accumulatedContent);
                               if (candidate && await completeFromCandidate(candidate)) {
@@ -1427,12 +1432,14 @@ export default function App() {
                           const delta = data.choices?.[0]?.delta;
                           const combinedChunk = (delta?.content || "") + (delta?.reasoning_content || "");
                           
-                           if (combinedChunk) {
-                              if (hasResolvedVideo) continue;
-                              accumulatedContent += combinedChunk;
-                              const updates = { streamLog: accumulatedContent.length > 1000 ? '...' + accumulatedContent.slice(-1000) : accumulatedContent };
+                               if (combinedChunk) {
+                                   if (hasResolvedVideo) continue;
+                                   accumulatedContent += combinedChunk;
+                                   const maybeFailure = detectUpstreamStreamFailure(accumulatedContent);
+                                   if (maybeFailure) throw new Error(maybeFailure);
+                                   const updates = { streamLog: accumulatedContent.length > 1000 ? '...' + accumulatedContent.slice(-1000) : accumulatedContent };
 
-                              if (!hasReceivedData) {
+                                   if (!hasReceivedData) {
                                   hasReceivedData = true;
                                   addLog(`[任务 ${taskId}] 开始接收数据流...`, 'info');
                                   updates.stage = '准备中';
@@ -1487,14 +1494,15 @@ export default function App() {
                               if (foundUrl && !hasResolvedVideo) {
                                   hasResolvedVideo = true;
                                   updateTask(taskId, { status: 'COMPLETED', stage: '已完成', progress: 100, videoUrl: foundUrl });
-                                   if (window.electronAPI && (typeof window.electronAPI.downloadFile === 'function' || typeof window.electronAPI.downloadVideo === 'function')) {
-                                       triggerDownload(foundUrl, taskId, undefined, '.mp4');
-                                   }
-                                  try { await reader.cancel(); } catch (e) { }
-                                  return;
-                              }
-                          }
-                      } catch (e) {
+                                    if (window.electronAPI && (typeof window.electronAPI.downloadFile === 'function' || typeof window.electronAPI.downloadVideo === 'function')) {
+                                        triggerDownload(foundUrl, taskId, undefined, '.mp4');
+                                    }
+                                   try { await reader.cancel(); } catch (e) { }
+                                   return;
+                               }
+                           }
+                       } catch (e) {
+                           if (!(e instanceof SyntaxError)) throw e;
                           if (e.message.includes("内容违规") || e.message.includes("超时")) throw e;
                       }
                   }
