@@ -13,4 +13,6 @@ services:
       AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-sora2_manager_session_v1}
       SORA2API_BASE_URL: ${SORA2API_BASE_URL:-}
       SORA2API_KEY: ${SORA2API_KEY:-}
+      COMFYUI2API_BASE_URL: ${COMFYUI2API_BASE_URL:-}
+      COMFYUI2API_TOKEN: ${COMFYUI2API_TOKEN:-}
     restart: unless-stopped
