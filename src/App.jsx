@@ -1292,6 +1292,48 @@ export default function App() {
       if (batchExcelImagesInputRef.current) batchExcelImagesInputRef.current.value = '';
   };
 
+  const handleDownloadExcelTemplate = () => {
+      try {
+          const templateRows = [
+              ['序号', '提示词', '横竖屏', '时长', '图片地址', '次数', '说明'],
+              ['说明', '填写视频描述（必填）', '1=横屏 2=竖屏（批量模式会按界面方向统一覆盖）', '1=10s 2=15s 3=15s高清PRO 4=25sPRO', '可选，图生视频需要（示例：1.png）', '可选，不填默认1次', '模型将按时长码自动选择并替换横竖屏'],
+              [1, '清晨森林小路，镜头缓慢推进，薄雾缭绕。', '', 1, '1.png', 1, '映射 sora2-portrait-10s / sora2-landscape-10s'],
+              [2, '城市夜景延时摄影，灯光流动，氛围电影感。', '', 2, '', 1, '无图片则按文生视频提交'],
+              [3, '雨中霓虹街道，角色转身，光影反射。', '', 3, '3.png', 2, '映射 sora2pro-hd-*-15s，重复2次'],
+              [4, '星空下山脊广角镜头，缓慢拉远。', '', 4, '4.png', 1, '映射 sora2pro-*-25s'],
+          ];
+
+          const ws = XLSX.utils.aoa_to_sheet(templateRows);
+          ws['!cols'] = [
+              { wch: 8 },
+              { wch: 58 },
+              { wch: 24 },
+              { wch: 36 },
+              { wch: 20 },
+              { wch: 12 },
+              { wch: 52 },
+          ];
+
+          const wb = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(wb, ws, '批量视频模板');
+
+          const binary = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+          const blob = new Blob([binary], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'videopanel-batch-template.xlsx';
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          addLog('已导出 Excel 模板（含示例）。', 'success');
+      } catch (err) {
+          addLog(`导出模板失败: ${String(err?.message || err)}`, 'error');
+      }
+  };
+
   const handleBatchExcelTemplateUpload = async (e) => {
       const file = e.target.files?.[0];
       if (!file) return;
@@ -2376,9 +2418,14 @@ export default function App() {
                                         <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
                                             <div className="text-xs font-semibold text-gray-600">1) 上传 Excel 模板</div>
                                             <input ref={batchExcelFileInputRef} type="file" accept=".xlsx,.xls" onChange={handleBatchExcelTemplateUpload} className="hidden" />
-                                            <button onClick={() => batchExcelFileInputRef.current?.click()} disabled={excelBatchLoading} className={`w-full px-3 py-2 text-xs font-bold rounded-lg border transition-colors ${excelBatchLoading ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-blue-200 text-blue-700 hover:bg-blue-50'}`}>
-                                                {excelBatchLoading ? '解析中...' : '选择 Excel 文件'}
-                                            </button>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                <button onClick={handleDownloadExcelTemplate} className="w-full px-3 py-2 text-xs font-bold rounded-lg border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-colors">
+                                                    下载示例模板
+                                                </button>
+                                                <button onClick={() => batchExcelFileInputRef.current?.click()} disabled={excelBatchLoading} className={`w-full px-3 py-2 text-xs font-bold rounded-lg border transition-colors ${excelBatchLoading ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-blue-200 text-blue-700 hover:bg-blue-50'}`}>
+                                                    {excelBatchLoading ? '解析中...' : '选择 Excel 文件'}
+                                                </button>
+                                            </div>
                                             <div className="text-[11px] text-gray-500 break-all">
                                                 {excelBatchFileName ? `已加载：${excelBatchFileName}` : '支持 .xlsx/.xls，默认读取第一个工作表'}
                                             </div>
