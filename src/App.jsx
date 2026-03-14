@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { comfyuiEndpoints, comfyuiProgressPercent, pickComfyuiVideoUrl, parseComfyuiModelsList, parseOpenAiLikeErrorMessage } from './comfyuiApi.js';
 import { detectUpstreamStreamFailure } from './streamErrors.js';
 
@@ -213,7 +214,7 @@ const getInitialUiState = () => {
     imageModel: (typeof saved.imageModel === 'string' && allowedImageModels.has(saved.imageModel)) ? saved.imageModel : DEFAULT_UI_STATE.imageModel,
     generationType: saved.generationType === 'text' || saved.generationType === 'image' ? saved.generationType : DEFAULT_UI_STATE.generationType,
     recordsScope: saved.recordsScope === 'all' ? 'all' : DEFAULT_UI_STATE.recordsScope,
-    batchMode: saved.batchMode === 'repeat' || saved.batchMode === 'script' ? saved.batchMode : DEFAULT_UI_STATE.batchMode,
+    batchMode: saved.batchMode === 'repeat' || saved.batchMode === 'script' || saved.batchMode === 'excel' ? saved.batchMode : DEFAULT_UI_STATE.batchMode,
     repeatCount: Math.max(1, parseInt(saved.repeatCount, 10) || DEFAULT_UI_STATE.repeatCount),
   };
 };
@@ -481,6 +482,107 @@ const getInitialQueue = () => {
   return saved.map(normalizeLoadedTask).filter(Boolean);
 };
 
+const readFileAsArrayBuffer = (file) => new Promise((resolve, reject) => {
+  try {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('文件格式无效'));
+    };
+    reader.readAsArrayBuffer(file);
+  } catch (e) {
+    reject(e);
+  }
+});
+
+const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
+  try {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.onloadend = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : null;
+      if (!dataUrl) {
+        reject(new Error('图片格式无效'));
+        return;
+      }
+      resolve(dataUrl);
+    };
+    reader.readAsDataURL(file);
+  } catch (e) {
+    reject(e);
+  }
+});
+
+const toPlainText = (value) => String(value == null ? '' : value).trim();
+
+const normalizeExcelHeader = (value) => toPlainText(value).replace(/\s+/g, '').toLowerCase();
+
+const normalizeImageMarker = (value) => {
+  const raw = toPlainText(value).replace(/\\/g, '/').replace(/^\.?\//, '');
+  if (!raw) return '';
+  const fileName = raw.split('/').pop() || raw;
+  return fileName.toLowerCase();
+};
+
+const findHeaderIndex = (rows) => {
+  if (!Array.isArray(rows)) return -1;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = Array.isArray(rows[i]) ? rows[i] : [];
+    const hasPrompt = row.some((cell) => /提示词|台词|script|prompt/i.test(toPlainText(cell)));
+    if (hasPrompt) return i;
+  }
+  return -1;
+};
+
+const findColumnIndex = (headerRow, patterns, fallbackIndex) => {
+  if (!Array.isArray(headerRow) || headerRow.length === 0) return fallbackIndex;
+  const normalized = headerRow.map(normalizeExcelHeader);
+  const idx = normalized.findIndex((name) => patterns.some((pattern) => name.includes(pattern)));
+  return idx >= 0 ? idx : fallbackIndex;
+};
+
+const parseExcelScriptRows = (sheet) => {
+  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+  if (!Array.isArray(matrix) || matrix.length === 0) return [];
+
+  const headerRowIndex = findHeaderIndex(matrix);
+  const headerRow = headerRowIndex >= 0 ? matrix[headerRowIndex] : matrix[0];
+  const promptCol = findColumnIndex(headerRow, ['提示词', '台词', 'script', 'prompt'], 1);
+  const imageCol = findColumnIndex(headerRow, ['图片地址', '图片', 'image', 'img'], 4);
+  const repeatCol = findColumnIndex(headerRow, ['次数', '重复', 'count'], 5);
+  const dataStart = (headerRowIndex >= 0 ? headerRowIndex : 0) + 1;
+
+  const rows = [];
+  for (let i = dataStart; i < matrix.length; i += 1) {
+    const row = Array.isArray(matrix[i]) ? matrix[i] : [];
+    const script = toPlainText(row[promptCol] ?? row[1]);
+    if (!script) continue;
+
+    const imageMarkerRaw = toPlainText(row[imageCol] ?? row[4]);
+    const repeatRaw = row[repeatCol] ?? row[5];
+    const hintText = `${script} ${imageMarkerRaw} ${toPlainText(repeatRaw)}`;
+    const looksLikeTemplateHint = script.length <= 40
+      && /填写视频描述|填写.*提示词|可选|重复提交次数|不填默认|1=横屏|1=10s/i.test(hintText);
+    if (looksLikeTemplateHint) continue;
+
+    const repeatCount = Math.max(1, parseInt(toPlainText(repeatRaw), 10) || 1);
+
+    rows.push({
+      rowIndex: i + 1,
+      script,
+      imageMarkerRaw,
+      imageMarker: normalizeImageMarker(imageMarkerRaw),
+      repeatCount,
+    });
+  }
+
+  return rows;
+};
+
 
 export default function App() {
   const initialUiStateRef = useRef(null);
@@ -537,6 +639,12 @@ export default function App() {
   const [batchMode, setBatchMode] = useState(() => initialUiState.batchMode); 
   const [batchScripts, setBatchScripts] = useState(['']);
   const [repeatCount, setRepeatCount] = useState(() => initialUiState.repeatCount);
+  const [excelBatchRows, setExcelBatchRows] = useState([]);
+  const [excelBatchFileName, setExcelBatchFileName] = useState('');
+  const [excelBatchImageMap, setExcelBatchImageMap] = useState({});
+  const [excelBatchImageNames, setExcelBatchImageNames] = useState([]);
+  const [excelBatchError, setExcelBatchError] = useState('');
+  const [excelBatchLoading, setExcelBatchLoading] = useState(false);
   
   // --- App 状态 ---
   const [showDebug, setShowDebug] = useState(false);
@@ -561,6 +669,8 @@ export default function App() {
   const composerFileInputRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
   const batchInputRef = useRef(null);
+  const batchExcelFileInputRef = useRef(null);
+  const batchExcelImagesInputRef = useRef(null);
   const lastTaskStartTime = useRef(0);
   const [tick, setTick] = useState(0);
   const toastTimer = useRef(null);
@@ -1123,8 +1233,108 @@ export default function App() {
       setBatchScripts(newScripts);
   };
 
+  const buildPromptFromScript = (script) => {
+      const masterPrompt = String(activeProject?.prompt || '').trim();
+      const scriptText = String(script || '').trim();
+      if (!scriptText) return masterPrompt;
+      if (masterPrompt.includes('这是台词文案')) {
+          return masterPrompt.replace('这是台词文案', scriptText);
+      }
+      if (!masterPrompt) return scriptText;
+      return `${masterPrompt} ${scriptText}`;
+  };
+
+  const clearExcelBatchState = () => {
+      setExcelBatchRows([]);
+      setExcelBatchFileName('');
+      setExcelBatchImageMap({});
+      setExcelBatchImageNames([]);
+      setExcelBatchError('');
+      setExcelBatchLoading(false);
+      if (batchExcelFileInputRef.current) batchExcelFileInputRef.current.value = '';
+      if (batchExcelImagesInputRef.current) batchExcelImagesInputRef.current.value = '';
+  };
+
+  const handleBatchExcelTemplateUpload = async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      setExcelBatchLoading(true);
+      setExcelBatchError('');
+      try {
+          const buffer = await readFileAsArrayBuffer(file);
+          const workbook = XLSX.read(buffer, { type: 'array' });
+          const firstSheetName = Array.isArray(workbook.SheetNames) ? workbook.SheetNames[0] : '';
+          if (!firstSheetName) throw new Error('Excel 中未找到工作表');
+
+          const sheet = workbook.Sheets[firstSheetName];
+          const parsedRows = parseExcelScriptRows(sheet);
+          if (parsedRows.length === 0) {
+              throw new Error('未解析到可用台词，请确认模板中“提示词”列有内容');
+          }
+
+          setExcelBatchRows(parsedRows);
+          setExcelBatchFileName(file.name || '未命名.xlsx');
+          setExcelBatchImageMap({});
+          setExcelBatchImageNames([]);
+          addLog(`Excel 批量模板解析成功：${parsedRows.length} 条`, 'success');
+      } catch (err) {
+          setExcelBatchRows([]);
+          setExcelBatchFileName('');
+          setExcelBatchImageMap({});
+          setExcelBatchImageNames([]);
+          const message = String(err?.message || err || '解析失败');
+          setExcelBatchError(message);
+          addLog(`Excel 解析失败: ${message}`, 'error');
+      } finally {
+          setExcelBatchLoading(false);
+          if (batchExcelFileInputRef.current) batchExcelFileInputRef.current.value = '';
+      }
+  };
+
+  const handleBatchExcelImagesUpload = async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length === 0) return;
+
+      try {
+          const loaded = await Promise.all(
+              files.map(async (file) => {
+                  const marker = normalizeImageMarker(file.name);
+                  if (!marker) return null;
+                  const dataUrl = await readFileAsDataUrl(file);
+                  return { marker, dataUrl, name: file.name };
+              })
+          );
+
+          const nextMap = {};
+          const nextNames = [];
+          loaded.forEach((item) => {
+              if (!item) return;
+              nextMap[item.marker] = item.dataUrl;
+              nextNames.push(item.name);
+          });
+
+          const mergedCount = Object.keys(nextMap).length;
+          if (mergedCount === 0) {
+              setExcelBatchError('未识别到可用图片文件');
+              return;
+          }
+
+          setExcelBatchError('');
+          setExcelBatchImageMap((prev) => ({ ...prev, ...nextMap }));
+          setExcelBatchImageNames((prev) => Array.from(new Set([...(Array.isArray(prev) ? prev : []), ...nextNames])));
+          addLog(`批量图片已载入：${mergedCount} 张`, 'success');
+      } catch (err) {
+          const message = String(err?.message || err || '读取图片失败');
+          setExcelBatchError(message);
+          addLog(`批量图片读取失败: ${message}`, 'error');
+      } finally {
+          if (batchExcelImagesInputRef.current) batchExcelImagesInputRef.current.value = '';
+      }
+  };
+
   const handleOpenBatchModal = () => {
-      if (generationType === 'image' && !activeProject.image) {
+      if (batchMode !== 'excel' && generationType === 'image' && !activeProject.image) {
           const typeLabel = workMode === 'video' ? '图生视频' : '图生图';
           addLog(`错误: ${typeLabel} 模式下必须上传项目图片。`, 'error');
           return;
@@ -1138,22 +1348,71 @@ export default function App() {
           const validScripts = batchScripts.filter(s => s.trim() !== '');
           if (validScripts.length === 0) return;
           validScripts.forEach((script) => {
-              let finalPrompt = String(activeProject.prompt || '');
-              if (finalPrompt.includes('这是台词文案')) {
-                  finalPrompt = finalPrompt.replace('这是台词文案', script);
-              } else {
-                  finalPrompt = `${finalPrompt} ${script}`;
-              }
+              const finalPrompt = buildPromptFromScript(script);
               addToQueue(finalPrompt, script);
           });
-      } else {
+      } else if (batchMode === 'repeat') {
           const count = parseInt(repeatCount) || 1;
           for(let i=0; i<count; i++) {
               addToQueue(String(activeProject.prompt || ''), `重复任务 #${i + 1}`);
           }
+      } else if (batchMode === 'excel') {
+          if (!Array.isArray(excelBatchRows) || excelBatchRows.length === 0) {
+              addLog('请先上传并解析 Excel 模板。', 'error');
+              return;
+          }
+
+          let addedCount = 0;
+          const missingImageRows = [];
+
+          excelBatchRows.forEach((row) => {
+              const script = String(row?.script || '').trim();
+              if (!script) return;
+
+              const finalPrompt = buildPromptFromScript(script);
+              const repeat = Math.max(1, parseInt(row?.repeatCount, 10) || 1);
+              const rowLabel = Number.isFinite(row?.rowIndex) ? `第 ${row.rowIndex} 行` : '某行';
+
+              let matchedImage = activeProject?.image || null;
+              if (generationType === 'image' && row?.imageMarker) {
+                  matchedImage = excelBatchImageMap[row.imageMarker] || null;
+                  if (!matchedImage) {
+                      missingImageRows.push(`${rowLabel}(${row.imageMarkerRaw || row.imageMarker})`);
+                      return;
+                  }
+              }
+
+              if (generationType === 'image' && !matchedImage) {
+                  missingImageRows.push(`${rowLabel}(未提供图片)`);
+                  return;
+              }
+
+              for (let i = 0; i < repeat; i += 1) {
+                  addToQueue(finalPrompt, script, {
+                      mediaType: workMode,
+                      generationType,
+                      image: generationType === 'image' ? matchedImage : null,
+                      modelUsed: workMode === 'image' ? selectedImageModelName : selectedVideoModelName,
+                  });
+                  addedCount += 1;
+              }
+          });
+
+          if (missingImageRows.length > 0) {
+              const preview = missingImageRows.slice(0, 5).join('，');
+              const suffix = missingImageRows.length > 5 ? ` 等 ${missingImageRows.length} 行` : '';
+              addLog(`以下行缺少匹配图片，已跳过：${preview}${suffix}`, 'error');
+          }
+
+          if (addedCount <= 0) {
+              addLog('没有可提交的任务，请检查 Excel 内容和图片匹配。', 'error');
+              return;
+          }
+          addLog(`Excel 批量任务已加入队列：${addedCount} 个`, 'success');
       }
       setShowBatchModal(false);
       if (batchMode === 'script') setBatchScripts(['']);
+      if (batchMode === 'excel') clearExcelBatchState();
   };
   
   const addToQueue = (prompt, scriptSnippet, overrides = {}) => {
@@ -1758,6 +2017,11 @@ export default function App() {
       return generationType === 'text' ? '文生视频' : '图生视频';
   };
 
+  const excelRowsWithImageMarker = Array.isArray(excelBatchRows)
+      ? excelBatchRows.filter((row) => String(row?.imageMarker || '').trim() !== '')
+      : [];
+  const excelMatchedImageCount = excelRowsWithImageMarker.filter((row) => Boolean(excelBatchImageMap[row.imageMarker])).length;
+
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-900 font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden relative">
       <datalist id="comfyui-models-datalist">
@@ -2150,6 +2414,7 @@ export default function App() {
                             <div className="flex bg-gray-100 p-1 rounded-lg mb-2">
                                 <button onClick={() => setBatchMode('script')} className={`flex-1 py-1.5 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-all ${batchMode === 'script' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><IconScript size={14} /> 台词模式</button>
                                 <button onClick={() => setBatchMode('repeat')} className={`flex-1 py-1.5 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-all ${batchMode === 'repeat' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><IconRepeat size={14} /> 重复模式</button>
+                                <button onClick={() => setBatchMode('excel')} className={`flex-1 py-1.5 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-all ${batchMode === 'excel' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><IconLayers size={14} /> Excel模式</button>
                             </div>
                             <button onClick={handleOpenBatchModal} className="w-full py-3.5 bg-blue-600 text-white rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-sm"><IconCopy size={18} />批量生成</button>
                         </div>
@@ -2403,7 +2668,18 @@ export default function App() {
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
               <div className="bg-white border border-gray-200 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[80vh]">
                   <div className="flex items-center justify-between p-5 border-b border-gray-100 bg-white">
-                      <div><h3 className="font-bold text-gray-900 text-lg">{batchMode === 'script' ? '批量文案录入' : '重复生成设置'}</h3><p className="text-xs text-gray-500 mt-1">{batchMode === 'script' ? '每一行将生成一个独立的视频任务。' : '将重复生成当前提示词。'}</p></div>
+                      <div>
+                        <h3 className="font-bold text-gray-900 text-lg">
+                          {batchMode === 'script' ? '批量文案录入' : (batchMode === 'repeat' ? '重复生成设置' : 'Excel 批量导入')}
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {batchMode === 'script'
+                            ? '每一行将生成一个独立任务。'
+                            : (batchMode === 'repeat'
+                                ? '将重复生成当前提示词。'
+                                : '上传 Excel 模板 + 多张图片，系统会按“图片地址”自动匹配并按顺序提交。')}
+                        </p>
+                      </div>
                       <button onClick={() => setShowBatchModal(false)} className="text-gray-400 hover:text-gray-900 transition-colors p-1 hover:bg-gray-100 rounded-full"><IconX size={20} /></button>
                   </div>
                   <div className="flex-1 overflow-y-auto p-8 bg-gray-50 flex flex-col items-center justify-center">
@@ -2413,11 +2689,106 @@ export default function App() {
                                   <div key={idx} className="flex gap-3 items-center animate-in slide-in-from-left-2 duration-300"><span className="text-xs font-mono text-gray-400 w-6 text-right">{idx + 1}.</span><input ref={idx === batchScripts.length - 1 ? batchInputRef : null} type="text" value={String(script)} placeholder={idx === batchScripts.length - 1 ? "输入新台词文案..." : ""} onChange={(e) => handleScriptChange(idx, e.target.value)} className="flex-1 bg-white border border-gray-300 rounded-lg px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all shadow-sm" /></div>
                               ))}
                           </div>
-                      ) : (
+                      ) : (batchMode === 'repeat' ? (
                           <div className="w-full max-w-sm space-y-6">
                               <div className="flex items-center justify-center gap-4"><button onClick={() => setRepeatCount(c => Math.max(1, c - 1))} className="w-12 h-12 rounded-full bg-white border border-gray-200 flex items-center justify-center shadow-sm"><IconMinus size={20} /></button><div className="text-center"><input type="number" min="1" value={repeatCount} onChange={(e) => setRepeatCount(Math.max(1, parseInt(e.target.value) || 1))} className="text-5xl font-bold text-gray-800 bg-transparent w-32 text-center focus:outline-none" /><div className="text-xs text-gray-400 mt-1">次重复</div></div><button onClick={() => setRepeatCount(c => c + 1)} className="w-12 h-12 rounded-full bg-white border border-gray-200 flex items-center justify-center shadow-sm"><IconPlus size={20} /></button></div>
                           </div>
-                      )}
+                      ) : (
+                          <div className="w-full space-y-4">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                  <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+                                      <div className="text-xs font-semibold text-gray-600">1) 上传 Excel 模板</div>
+                                      <input ref={batchExcelFileInputRef} type="file" accept=".xlsx,.xls" onChange={handleBatchExcelTemplateUpload} className="hidden" />
+                                      <button onClick={() => batchExcelFileInputRef.current?.click()} disabled={excelBatchLoading} className={`w-full px-3 py-2 text-xs font-bold rounded-lg border transition-colors ${excelBatchLoading ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-blue-200 text-blue-700 hover:bg-blue-50'}`}>
+                                          {excelBatchLoading ? '解析中...' : '选择 Excel 文件'}
+                                      </button>
+                                      <div className="text-[11px] text-gray-500 break-all">
+                                          {excelBatchFileName ? `已加载：${excelBatchFileName}` : '支持 .xlsx/.xls，默认读取第一个工作表'}
+                                      </div>
+                                  </div>
+                                  <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+                                      <div className="text-xs font-semibold text-gray-600">2) 批量上传图片</div>
+                                      <input ref={batchExcelImagesInputRef} type="file" accept="image/*" multiple onChange={handleBatchExcelImagesUpload} className="hidden" />
+                                      <button onClick={() => batchExcelImagesInputRef.current?.click()} className="w-full px-3 py-2 text-xs font-bold rounded-lg border border-emerald-200 text-emerald-700 bg-white hover:bg-emerald-50 transition-colors">
+                                          选择多张图片
+                                      </button>
+                                      <div className="text-[11px] text-gray-500">
+                                          {excelBatchImageNames.length > 0 ? `已上传 ${excelBatchImageNames.length} 张图片` : '图片文件名将和“图片地址”列自动匹配（如 1.png）'}
+                                      </div>
+                                  </div>
+                              </div>
+
+                              {excelBatchError && (
+                                  <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                                      {String(excelBatchError || '')}
+                                  </div>
+                              )}
+
+                              <div className="text-xs text-gray-600 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                                  已解析 <span className="font-semibold">{excelBatchRows.length}</span> 行，
+                                  需要匹配图片 <span className="font-semibold">{excelRowsWithImageMarker.length}</span> 行，
+                                  已匹配 <span className="font-semibold text-emerald-600">{excelMatchedImageCount}</span> 行
+                              </div>
+
+                              {excelBatchRows.length > 0 ? (
+                                  <div className="max-h-[320px] overflow-auto rounded-lg border border-gray-200 bg-white">
+                                      <table className="w-full text-xs">
+                                          <thead className="bg-gray-50 text-gray-500">
+                                              <tr>
+                                                  <th className="px-3 py-2 text-left font-semibold">行号</th>
+                                                  <th className="px-3 py-2 text-left font-semibold">台词/提示词</th>
+                                                  <th className="px-3 py-2 text-left font-semibold">图片标记</th>
+                                                  <th className="px-3 py-2 text-left font-semibold">次数</th>
+                                                  <th className="px-3 py-2 text-left font-semibold">匹配状态</th>
+                                              </tr>
+                                          </thead>
+                                          <tbody>
+                                              {excelBatchRows.map((row) => {
+                                                  const marker = String(row?.imageMarker || '');
+                                                  const hasMarker = Boolean(marker);
+                                                  const hasMappedImage = hasMarker ? Boolean(excelBatchImageMap[marker]) : Boolean(activeProject?.image);
+                                                  const needImage = generationType === 'image';
+                                                  let statusText = '文本任务';
+                                                  let statusClass = 'text-blue-600';
+
+                                                  if (needImage) {
+                                                      if (hasMappedImage) {
+                                                          statusText = hasMarker ? '已匹配图片' : '使用默认图';
+                                                          statusClass = 'text-emerald-600';
+                                                      } else {
+                                                          statusText = hasMarker ? '缺少匹配图' : '缺少默认图';
+                                                          statusClass = 'text-red-600';
+                                                      }
+                                                  }
+
+                                                  return (
+                                                      <tr key={`${row.rowIndex}-${row.script}`} className="border-t border-gray-100">
+                                                          <td className="px-3 py-2 align-top text-gray-500">{row.rowIndex}</td>
+                                                          <td className="px-3 py-2 align-top text-gray-800 max-w-[420px]">
+                                                              <div className="truncate" title={String(row.script || '')}>{String(row.script || '')}</div>
+                                                          </td>
+                                                          <td className="px-3 py-2 align-top text-gray-600">{row.imageMarkerRaw || '-'}</td>
+                                                          <td className="px-3 py-2 align-top text-gray-600">{row.repeatCount}</td>
+                                                          <td className={`px-3 py-2 align-top font-semibold ${statusClass}`}>{statusText}</td>
+                                                      </tr>
+                                                  );
+                                              })}
+                                          </tbody>
+                                      </table>
+                                  </div>
+                              ) : (
+                                  <div className="text-xs text-gray-400 bg-white border border-dashed border-gray-300 rounded-lg px-4 py-6 text-center">
+                                      请先上传 Excel 模板文件
+                                  </div>
+                              )}
+
+                              <div className="flex justify-end">
+                                  <button onClick={clearExcelBatchState} className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+                                      清空导入数据
+                                  </button>
+                              </div>
+                          </div>
+                      ))}
                   </div>
                   <div className="p-5 border-t border-gray-200 bg-white flex justify-end gap-3"><button onClick={() => setShowBatchModal(false)} className="px-5 py-2.5 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg">取消</button><button onClick={handleBatchAddToQueue} className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-sm">添加任务</button></div>
               </div>
@@ -2608,6 +2979,7 @@ export default function App() {
                               <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
                                   <button onClick={() => setBatchMode('script')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'script' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>台词模式</button>
                                   <button onClick={() => setBatchMode('repeat')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'repeat' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>重复模式</button>
+                                  <button onClick={() => setBatchMode('excel')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'excel' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Excel模式</button>
                               </div>
 
                               <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
@@ -2623,7 +2995,7 @@ export default function App() {
                               </div>
                           )}
 
-                          {generationType === 'image' && !activeProject?.image && (
+                          {batchMode !== 'excel' && generationType === 'image' && !activeProject?.image && (
                               <div className="text-xs text-red-600">
                                   图生模式需要上传「默认图片」。聊天框里也可以直接附带图片发送。
                               </div>
