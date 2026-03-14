@@ -424,16 +424,15 @@ const normalizeLoadedTask = (input) => {
     image: null,
   };
 
+  const isVideosStyleTask = normalized.mediaType === 'video'
+    && normalized.provider === 'sora'
+    && (normalized.pollingType === 'videos' || Boolean(normalized.upstreamTaskId));
+
   const isTerminal = normalized.status === 'COMPLETED' || normalized.status === 'FAILED';
   if (!isTerminal) {
-    const canResumeVideoPolling = normalized.mediaType === 'video'
-      && normalized.provider === 'sora'
-      && normalized.pollingType === 'videos'
-      && Boolean(normalized.upstreamTaskId);
-
-    if (canResumeVideoPolling) {
+    if (isVideosStyleTask) {
       normalized.status = 'PENDING';
-      normalized.stage = '等待恢复轮询';
+      normalized.stage = normalized.upstreamTaskId ? '等待恢复轮询' : '等待恢复任务';
       normalized.progress = Math.max(1, normalized.progress || 0);
       normalized.errorMessage = null;
     } else {
@@ -445,10 +444,17 @@ const normalizeLoadedTask = (input) => {
   }
 
   if (normalized.status === 'COMPLETED' && normalized.mediaType === 'video' && !normalized.videoUrl) {
-    normalized.status = 'FAILED';
-    normalized.stage = '无视频链接';
-    normalized.progress = 0;
-    normalized.errorMessage = normalized.errorMessage || '记录缺少 videoUrl，无法播放或下载。';
+    if (isVideosStyleTask && normalized.upstreamTaskId) {
+      normalized.status = 'PENDING';
+      normalized.stage = '恢复视频链接';
+      normalized.progress = Math.max(95, normalized.progress || 95);
+      normalized.errorMessage = null;
+    } else {
+      normalized.status = 'FAILED';
+      normalized.stage = '无视频链接';
+      normalized.progress = 0;
+      normalized.errorMessage = normalized.errorMessage || '记录缺少 videoUrl，无法播放或下载。';
+    }
   }
 
   if (normalized.status === 'COMPLETED' && normalized.mediaType === 'image' && !normalized.imageUrl && !normalized.imageStored) {
@@ -987,7 +993,7 @@ export default function App() {
         });
         window.localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(tasksToSave));
       } catch (e) { }
-    }, 1000);
+    }, 300);
 
     return () => {
       if (persistQueueTimer.current) clearTimeout(persistQueueTimer.current);
@@ -1587,7 +1593,7 @@ export default function App() {
           image: taskGenerationType === 'image' ? taskImage : null,
           generationType: taskGenerationType,
           upstreamTaskId: '',
-          pollingType: null,
+          pollingType: taskMediaType === 'video' && config.videoApiMode === 'videos' ? 'videos' : null,
           videoOrientation: taskVideoOrientation,
           videoDuration: taskVideoDuration,
        };
