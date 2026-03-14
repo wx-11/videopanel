@@ -119,7 +119,6 @@ const inferDefaultBaseUrl = () => {
 
 const DEFAULT_CONFIG = {
   baseUrl: inferDefaultBaseUrl(),
-  videoApiMode: 'videos',
   apiKey: '',
   maxConcurrent: 3,
   taskInterval: 1.0,
@@ -148,7 +147,6 @@ const getInitialConfig = () => {
   return {
     ...DEFAULT_CONFIG,
     baseUrl: typeof saved.baseUrl === 'string' ? saved.baseUrl : DEFAULT_CONFIG.baseUrl,
-    videoApiMode: saved.videoApiMode === 'chat_completions' ? 'chat_completions' : DEFAULT_CONFIG.videoApiMode,
     apiKey: typeof saved.apiKey === 'string' ? saved.apiKey : DEFAULT_CONFIG.apiKey,
     maxConcurrent: Math.max(1, parseInt(saved.maxConcurrent, 10) || DEFAULT_CONFIG.maxConcurrent),
     taskInterval: Math.max(0.1, parseFloat(saved.taskInterval) || DEFAULT_CONFIG.taskInterval),
@@ -1197,7 +1195,7 @@ export default function App() {
         previewPrompt = previewPrompt.replace('这是台词文案', '[台词文案]');
     }
 
-    if (workMode === 'video' && config.videoApiMode === 'videos') {
+    if (workMode === 'video') {
       const videosBase = resolveVideosBaseUrl(config.baseUrl);
       const resolvedUrl = typeof window !== 'undefined' && String(videosBase || '').startsWith('/')
         ? `${window.location.origin}${String(videosBase)}`
@@ -1593,7 +1591,7 @@ export default function App() {
           image: taskGenerationType === 'image' ? taskImage : null,
           generationType: taskGenerationType,
           upstreamTaskId: '',
-          pollingType: taskMediaType === 'video' && config.videoApiMode === 'videos' ? 'videos' : null,
+          pollingType: taskMediaType === 'video' ? 'videos' : null,
           videoOrientation: taskVideoOrientation,
           videoDuration: taskVideoDuration,
        };
@@ -1748,8 +1746,7 @@ export default function App() {
         : duration;
       const taskVideoOrientation = task?.videoOrientation === 'landscape' ? 'landscape' : 'portrait';
       const taskUpstreamTaskId = String(task?.upstreamTaskId || '').trim();
-      const useVideosApi = taskMediaType === 'video'
-        && (task?.pollingType === 'videos' || config.videoApiMode === 'videos');
+      const useVideosApi = taskMediaType === 'video';
 
       updateTask(taskId, { status: 'GENERATING', stage: '初始化中', progress: 0, errorMessage: null });
 
@@ -2632,13 +2629,6 @@ export default function App() {
                             {workMode === 'video' ? (
                                 <>
                                     <div className="space-y-3">
-                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">视频接口</label>
-                                        <div className="grid grid-cols-2 gap-2">
-                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>videos</button>
-                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>completion</button>
-                                        </div>
-                                    </div>
-                                    <div className="space-y-3">
                                         <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Model</label>
                                         <div className="grid grid-cols-2 gap-2">
                                             <button onClick={() => setModelFamily('sora-2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora-2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora-2</button>
@@ -2992,7 +2982,7 @@ export default function App() {
                   <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100">
                       <div className="min-w-0">
                           <h3 className="font-bold text-gray-900 text-lg">设置</h3>
-                          <div className="text-[11px] text-gray-500 mt-0.5 truncate">视频可切换 videos 或 completion</div>
+                          <div className="text-[11px] text-gray-500 mt-0.5 truncate">视频固定使用 videos 接口</div>
                       </div>
                       <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-900 hover:bg-gray-100 p-2 rounded-lg transition-colors" title="关闭">
                           <IconX size={20}/>
@@ -3013,14 +3003,6 @@ export default function App() {
 
                           {workMode === 'video' ? (
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                  <div className="space-y-2">
-                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">视频接口</label>
-                                      <div className="grid grid-cols-2 gap-2">
-                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>videos</button>
-                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>completion</button>
-                                      </div>
-                                  </div>
-
                                   <div className="space-y-2">
                                       <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Video Model</label>
                                       <div className="grid grid-cols-2 gap-2">
@@ -3159,13 +3141,6 @@ export default function App() {
                               <div className="space-y-2">
                                   <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> API 地址 (Endpoint)</label>
                                   <input type="text" value={String(config.baseUrl || '')} onChange={(e) => setConfig({...config, baseUrl: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
-                              </div>
-                              <div className="space-y-2">
-                                  <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> 视频接口模式</label>
-                                  <div className="grid grid-cols-2 gap-2">
-                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>videos</button>
-                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>completion</button>
-                                  </div>
                               </div>
                               <div className="space-y-2">
                                   <label className="text-xs font-semibold text-gray-500 uppercase">API 密钥 (Key，可选)</label>
