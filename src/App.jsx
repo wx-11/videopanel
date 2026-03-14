@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { comfyuiEndpoints, comfyuiProgressPercent, pickComfyuiVideoUrl, parseComfyuiModelsList, parseOpenAiLikeErrorMessage } from './comfyuiApi.js';
 import { detectUpstreamStreamFailure } from './streamErrors.js';
 
 // --- 图标组件 (Icons) ---
@@ -118,32 +117,9 @@ const inferDefaultBaseUrl = () => {
   return 'http://localhost:8000/v1/chat/completions';
 };
 
-const inferDefaultComfyuiBaseUrl = () => {
-  try {
-    const fromEnv = String(import.meta?.env?.VITE_COMFYUI2API_BASE_URL || '').trim();
-    if (fromEnv) return fromEnv;
-  } catch (e) { }
-
-  try {
-    if (typeof window === 'undefined') return 'http://127.0.0.1:8000';
-    const protocol = window.location?.protocol;
-    const hostname = window.location?.hostname;
-    const port = window.location?.port;
-    const isHttp = protocol === 'http:' || protocol === 'https:';
-    const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1';
-    const isViteDev = port === '5173' || port === '4173';
-    if (isHttp && hostname) {
-      if (!isLocalHost) return '/comfyui';
-      if (!isViteDev) return '/comfyui';
-    }
-  } catch (e) { }
-
-  return 'http://127.0.0.1:8000';
-};
-
 const DEFAULT_CONFIG = {
   baseUrl: inferDefaultBaseUrl(),
-  comfyuiBaseUrl: inferDefaultComfyuiBaseUrl(),
+  videoApiMode: 'videos',
   apiKey: '',
   maxConcurrent: 3,
   taskInterval: 1.0,
@@ -152,12 +128,10 @@ const DEFAULT_CONFIG = {
 const DEFAULT_UI_STATE = {
   workMode: 'video',
   activeProjectId: 1,
-  videoProvider: 'sora',
-  comfyuiModel: '',
   videoTaskMode: 'image',
   orientation: 'portrait',
   duration: '15s',
-  modelFamily: 'sora2',
+  modelFamily: 'sora-2',
   imageModel: 'gpt-image',
   generationType: 'image',
   recordsScope: 'project',
@@ -174,7 +148,7 @@ const getInitialConfig = () => {
   return {
     ...DEFAULT_CONFIG,
     baseUrl: typeof saved.baseUrl === 'string' ? saved.baseUrl : DEFAULT_CONFIG.baseUrl,
-    comfyuiBaseUrl: typeof saved.comfyuiBaseUrl === 'string' ? saved.comfyuiBaseUrl : DEFAULT_CONFIG.comfyuiBaseUrl,
+    videoApiMode: saved.videoApiMode === 'chat_completions' ? 'chat_completions' : DEFAULT_CONFIG.videoApiMode,
     apiKey: typeof saved.apiKey === 'string' ? saved.apiKey : DEFAULT_CONFIG.apiKey,
     maxConcurrent: Math.max(1, parseInt(saved.maxConcurrent, 10) || DEFAULT_CONFIG.maxConcurrent),
     taskInterval: Math.max(0.1, parseFloat(saved.taskInterval) || DEFAULT_CONFIG.taskInterval),
@@ -191,15 +165,7 @@ const getInitialUiState = () => {
   let activeProjectId = typeof rawActiveProjectId === 'number' ? rawActiveProjectId : parseInt(rawActiveProjectId, 10);
   if (!Number.isFinite(activeProjectId)) activeProjectId = DEFAULT_UI_STATE.activeProjectId;
 
-  const allowedModelFamilies = new Set([
-    'sora2',
-    'sora2pro',
-    'sora2pro-hd',
-    'prompt-enhance-short',
-    'prompt-enhance-medium',
-    'prompt-enhance-long',
-  ]);
-  const allowedVideoProviders = new Set(['sora', 'comfyui']);
+  const allowedModelFamilies = new Set(['sora-2', 'sora-2-pro']);
   const allowedWorkModes = new Set(['video', 'image']);
   const allowedImageModels = new Set(['gpt-image', 'gpt-image-landscape', 'gpt-image-portrait']);
   const allowedVideoTaskModes = new Set(['text', 'image', 'batch']);
@@ -208,8 +174,6 @@ const getInitialUiState = () => {
     ...DEFAULT_UI_STATE,
     workMode: (typeof saved.workMode === 'string' && allowedWorkModes.has(saved.workMode)) ? saved.workMode : DEFAULT_UI_STATE.workMode,
     activeProjectId,
-    videoProvider: (typeof saved.videoProvider === 'string' && allowedVideoProviders.has(saved.videoProvider)) ? saved.videoProvider : DEFAULT_UI_STATE.videoProvider,
-    comfyuiModel: typeof saved.comfyuiModel === 'string' ? saved.comfyuiModel : DEFAULT_UI_STATE.comfyuiModel,
     videoTaskMode: (typeof saved.videoTaskMode === 'string' && allowedVideoTaskModes.has(saved.videoTaskMode))
       ? saved.videoTaskMode
       : (saved.generationType === 'text' ? 'text' : DEFAULT_UI_STATE.videoTaskMode),
@@ -425,10 +389,13 @@ const normalizeLoadedTask = (input) => {
   const mediaType = input.mediaType === 'image' ? 'image' : 'video';
   const rawGenerationType = typeof input.generationType === 'string' ? input.generationType : null;
   const generationType = rawGenerationType === 'text' || rawGenerationType === 'image' ? rawGenerationType : 'image';
-  const rawProvider = typeof input.provider === 'string' ? input.provider : null;
-  const provider = (rawProvider === 'sora' || rawProvider === 'comfyui')
-      ? rawProvider
-      : (mediaType === 'video' ? 'sora' : null);
+  const provider = mediaType === 'video' ? 'sora' : null;
+  const upstreamTaskId = input.upstreamTaskId ? String(input.upstreamTaskId) : '';
+  const pollingType = input.pollingType === 'videos' ? 'videos' : null;
+  const normalizedVideoOrientation = input.videoOrientation === 'landscape' ? 'landscape' : 'portrait';
+  const normalizedVideoDuration = input.videoDuration === '10s' || input.videoDuration === '15s' || input.videoDuration === '25s'
+    ? input.videoDuration
+    : '15s';
 
   const normalized = {
     id: input.id ?? (Date.now() + Math.random()),
@@ -450,15 +417,31 @@ const normalizeLoadedTask = (input) => {
     timestamp: input.timestamp ? String(input.timestamp) : new Date().toLocaleString(),
     modelUsed: input.modelUsed ? String(input.modelUsed) : undefined,
     generationType,
+    upstreamTaskId,
+    pollingType,
+    videoOrientation: normalizedVideoOrientation,
+    videoDuration: normalizedVideoDuration,
     image: null,
   };
 
   const isTerminal = normalized.status === 'COMPLETED' || normalized.status === 'FAILED';
   if (!isTerminal) {
-    normalized.status = 'FAILED';
-    normalized.stage = '已中断';
-    normalized.progress = 0;
-    normalized.errorMessage = normalized.errorMessage || '任务在上次运行中被中断（未完成）。';
+    const canResumeVideoPolling = normalized.mediaType === 'video'
+      && normalized.provider === 'sora'
+      && normalized.pollingType === 'videos'
+      && Boolean(normalized.upstreamTaskId);
+
+    if (canResumeVideoPolling) {
+      normalized.status = 'PENDING';
+      normalized.stage = '等待恢复轮询';
+      normalized.progress = Math.max(1, normalized.progress || 0);
+      normalized.errorMessage = null;
+    } else {
+      normalized.status = 'FAILED';
+      normalized.stage = '已中断';
+      normalized.progress = 0;
+      normalized.errorMessage = normalized.errorMessage || '任务在上次运行中被中断（未完成）。';
+    }
   }
 
   if (normalized.status === 'COMPLETED' && normalized.mediaType === 'video' && !normalized.videoUrl) {
@@ -548,14 +531,130 @@ const parseExcelDurationCode = (value) => {
   return 2;
 };
 
-const resolveExcelVideoModel = (durationCode, orientation = 'portrait') => {
-  const safeOrientation = orientation === 'landscape' ? 'landscape' : 'portrait';
+const resolveExcelVideoSpec = (durationCode) => {
   const code = Number.isFinite(durationCode) ? durationCode : 2;
-  if (code === 1) return `sora2-${safeOrientation}-10s`;
-  if (code === 2) return `sora2-${safeOrientation}-15s`;
-  if (code === 3) return `sora2pro-hd-${safeOrientation}-15s`;
-  if (code === 4) return `sora2pro-${safeOrientation}-25s`;
-  return `sora2-${safeOrientation}-15s`;
+  if (code === 1) return { model: 'sora-2', duration: '10s' };
+  if (code === 2) return { model: 'sora-2', duration: '15s' };
+  if (code === 3) return { model: 'sora-2-pro', duration: '15s' };
+  if (code === 4) return { model: 'sora-2-pro', duration: '25s' };
+  return { model: 'sora-2', duration: '15s' };
+};
+
+const getVideoSizeByOrientation = (orientation) => (orientation === 'landscape' ? '1280x720' : '720x1280');
+
+const parseVideoSeconds = (value) => {
+  const num = parseInt(String(value || '').replace(/[^\d]/g, ''), 10);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return num;
+};
+
+const resolveVideosBaseUrl = (rawBaseUrl) => {
+  const raw = String(rawBaseUrl || '').trim();
+  if (!raw) return '/v1/videos';
+
+  const normalizePath = (pathname) => {
+    const path = String(pathname || '').trim() || '/';
+    if (/\/v1\/videos\/?$/.test(path)) return path.replace(/\/+$/g, '');
+    if (/\/v1\/chat\/completions\/?$/.test(path)) return path.replace(/\/chat\/completions\/?$/g, '/videos');
+    if (/\/v1\/?$/.test(path)) return path.replace(/\/+$/g, '') + '/videos';
+    return '/v1/videos';
+  };
+
+  try {
+    if (raw.startsWith('/')) {
+      const origin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1';
+      const parsed = new URL(raw, origin);
+      const nextPath = normalizePath(parsed.pathname);
+      return nextPath;
+    }
+    const parsed = new URL(raw);
+    const nextPath = normalizePath(parsed.pathname);
+    return `${parsed.origin}${nextPath}`;
+  } catch (e) {
+    const replaced = raw.replace(/\/v1\/chat\/completions\/?$/g, '/v1/videos').replace(/\/+$/g, '');
+    return replaced || '/v1/videos';
+  }
+};
+
+const joinUrlPath = (base, tail) => {
+  const left = String(base || '').replace(/\/+$/g, '');
+  const right = String(tail || '').replace(/^\/+/g, '');
+  return `${left}/${right}`;
+};
+
+const extractVideoTaskId = (payload) => {
+  const candidates = [
+    payload?.id,
+    payload?.task_id,
+    payload?.video_id,
+    payload?.data?.id,
+    payload?.data?.task_id,
+    payload?.task?.id,
+    payload?.task?.task_id,
+    payload?.result?.id,
+  ];
+  for (const candidate of candidates) {
+    const str = String(candidate || '').trim();
+    if (str) return str;
+  }
+  return '';
+};
+
+const normalizeVideoTaskStatus = (value) => String(value || '').trim().toLowerCase();
+
+const mapVideoTaskStage = (status) => {
+  const current = normalizeVideoTaskStatus(status);
+  if (['completed', 'succeeded', 'success', 'done'].includes(current)) return '已完成';
+  if (['failed', 'error', 'cancelled', 'canceled', 'expired'].includes(current)) return '失败';
+  if (['queued', 'pending', 'submitted', 'created'].includes(current)) return '排队中';
+  if (['running', 'processing', 'in_progress', 'generating'].includes(current)) return '生成中';
+  return current ? `状态: ${current}` : '处理中';
+};
+
+const parseVideoTaskProgress = (...candidates) => {
+  for (const value of candidates) {
+    if (value === null || value === undefined) continue;
+    const num = typeof value === 'number' ? value : parseFloat(String(value).replace('%', ''));
+    if (!Number.isFinite(num)) continue;
+    if (num <= 1) return Math.max(0, Math.min(100, Math.round(num * 100)));
+    return Math.max(0, Math.min(100, Math.round(num)));
+  }
+  return null;
+};
+
+const parseVideoTaskError = (payload) => {
+  const candidates = [
+    payload?.error?.message,
+    payload?.error_message,
+    payload?.message,
+    payload?.data?.error?.message,
+    payload?.data?.error_message,
+    payload?.task?.error?.message,
+    payload?.task?.error_message,
+  ];
+  for (const value of candidates) {
+    const str = String(value || '').trim();
+    if (str) return str;
+  }
+  return '';
+};
+
+const parseVideoTaskResultUrl = (payload) => {
+  const candidates = [
+    payload?.video_url,
+    payload?.url,
+    payload?.output?.url,
+    payload?.result?.url,
+    payload?.data?.video_url,
+    payload?.data?.url,
+    payload?.task?.video_url,
+    payload?.task?.url,
+  ];
+  for (const value of candidates) {
+    const str = String(value || '').trim();
+    if (str.startsWith('http://') || str.startsWith('https://') || str.startsWith('/')) return str;
+  }
+  return '';
 };
 
 const findHeaderIndex = (rows) => {
@@ -643,31 +742,16 @@ export default function App() {
   // --- 当前项目输入状态 ---
   const [workMode, setWorkMode] = useState(() => initialUiState.workMode);
   const [activeProject, setActiveProject] = useState(() => projects.find(p => p.id === initialUiState.activeProjectId) || projects[0]);
-  const [videoProvider, setVideoProvider] = useState(() => initialUiState.videoProvider || 'sora');
-  const [comfyuiModel, setComfyuiModel] = useState(() => initialUiState.comfyuiModel || '');
-  const [comfyuiModels, setComfyuiModels] = useState([]);
-  const [comfyuiModelsLoading, setComfyuiModelsLoading] = useState(false);
-  const [comfyuiModelsError, setComfyuiModelsError] = useState('');
   const [orientation, setOrientation] = useState(() => initialUiState.orientation);
   const [duration, setDuration] = useState(() => initialUiState.duration);
   const [modelFamily, setModelFamily] = useState(() => initialUiState.modelFamily);
   const [imageModel, setImageModel] = useState(() => initialUiState.imageModel);
-  const selectedVideoModelName = videoProvider === 'comfyui'
-      ? String(comfyuiModel || '').trim()
-      : (modelFamily.startsWith('prompt-enhance')
-          ? `${modelFamily}-${duration}`
-          : `${modelFamily}-${orientation}-${duration}`);
+  const selectedVideoModelName = modelFamily;
   const selectedImageModelName = imageModel;
   const selectedModelName = workMode === 'image' ? selectedImageModelName : selectedVideoModelName;
   const [generationType, setGenerationType] = useState(() => initialUiState.generationType);
   const [videoTaskMode, setVideoTaskMode] = useState(() => initialUiState.videoTaskMode || (initialUiState.generationType === 'text' ? 'text' : 'image'));
   const [recordsScope, setRecordsScope] = useState(() => initialUiState.recordsScope || 'project');
-
-  const desiredComfyuiWorkflowKind = generationType === 'image' ? 'img2video' : 'txt2video';
-  const comfyuiModelsForVideoKind = Array.isArray(comfyuiModels) ? comfyuiModels.filter((m) => String(m?.kind || '').toLowerCase() === desiredComfyuiWorkflowKind) : [];
-  const comfyuiWorkflowSuggestions = comfyuiModelsForVideoKind.length > 0 ? comfyuiModelsForVideoKind : (Array.isArray(comfyuiModels) ? comfyuiModels : []);
-  const comfyuiModelsTotalCount = Array.isArray(comfyuiModels) ? comfyuiModels.length : 0;
-  const comfyuiModelsShowingFiltered = comfyuiModelsTotalCount > 0 && comfyuiModelsForVideoKind.length > 0 && comfyuiModelsForVideoKind.length < comfyuiModelsTotalCount;
 
   // --- 批量生成状态 ---
   const [showBatchModal, setShowBatchModal] = useState(false);
@@ -808,37 +892,6 @@ export default function App() {
     return headers;
   };
 
-  const loadComfyuiModels = async () => {
-    try {
-      setComfyuiModelsError('');
-      setComfyuiModelsLoading(true);
-
-      const base = String(config?.comfyuiBaseUrl || '').trim();
-      if (!base) throw new Error('Missing ComfyUI2API Base URL');
-      const { models } = comfyuiEndpoints(base);
-
-      const res = await fetch(models, { headers: buildRequestHeaders() });
-      if (!res.ok) {
-        let errorMsg = `HTTP ${res.status}`;
-        try {
-          const errorText = await res.text();
-          errorMsg = parseOpenAiLikeErrorMessage(errorText) || errorText || errorMsg;
-        } catch (e) { }
-        throw new Error(errorMsg);
-      }
-
-      const payload = await res.json();
-      const list = parseComfyuiModelsList(payload).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-      setComfyuiModels(list);
-      if (list.length === 0) setComfyuiModelsError('No workflows found from /v1/models');
-    } catch (e) {
-      setComfyuiModels([]);
-      setComfyuiModelsError(String(e?.message || e || 'Failed to load models'));
-    } finally {
-      setComfyuiModelsLoading(false);
-    }
-  };
-
   const ensureGatewayAuthed = () => {
     if (!gatewayAuthChecked) {
       refreshGatewayAuthStatus({ openModalOnNeed: true });
@@ -877,21 +930,6 @@ export default function App() {
   useEffect(() => {
     refreshGatewayAuthStatus({ openModalOnNeed: true });
   }, []);
-
-  useEffect(() => {
-    setComfyuiModels([]);
-    setComfyuiModelsError('');
-  }, [config.comfyuiBaseUrl]);
-
-  useEffect(() => {
-    if (workMode !== 'video') return;
-    if (videoProvider !== 'comfyui') return;
-    if (comfyuiModelsLoading) return;
-    if (Array.isArray(comfyuiModels) && comfyuiModels.length > 0) return;
-    const base = String(config?.comfyuiBaseUrl || '').trim();
-    if (!base) return;
-    loadComfyuiModels();
-  }, [workMode, videoProvider, config.comfyuiBaseUrl]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.localStorage) return;
@@ -939,6 +977,12 @@ export default function App() {
             timestamp: t.timestamp,
             modelUsed: t.modelUsed,
             generationType: t.generationType,
+            upstreamTaskId: t.upstreamTaskId ? String(t.upstreamTaskId) : '',
+            pollingType: t.pollingType || null,
+            videoOrientation: t.videoOrientation === 'landscape' ? 'landscape' : 'portrait',
+            videoDuration: t.videoDuration === '10s' || t.videoDuration === '15s' || t.videoDuration === '25s'
+              ? t.videoDuration
+              : '15s',
           };
         });
         window.localStorage.setItem(STORAGE_KEYS.queue, JSON.stringify(tasksToSave));
@@ -981,8 +1025,6 @@ export default function App() {
         const uiState = {
           workMode,
           activeProjectId,
-          videoProvider,
-          comfyuiModel,
           videoTaskMode,
           orientation,
           duration,
@@ -1000,7 +1042,7 @@ export default function App() {
     return () => {
       if (persistUiTimer.current) clearTimeout(persistUiTimer.current);
     };
-  }, [workMode, activeProjectId, videoProvider, comfyuiModel, videoTaskMode, orientation, duration, modelFamily, imageModel, generationType, recordsScope, batchMode, repeatCount]);
+  }, [workMode, activeProjectId, videoTaskMode, orientation, duration, modelFamily, imageModel, generationType, recordsScope, batchMode, repeatCount]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.localStorage) return;
@@ -1104,7 +1146,7 @@ export default function App() {
         if (nextTask) {
             lastTaskStartTime.current = Date.now();
             updateTask(nextTask.id, { status: 'STARTING', stage: '准备发射' });
-             processTask(nextTask.id, nextTask.prompt, nextTask.image, nextTask.generationType, nextTask.modelUsed, nextTask.mediaType, nextTask.provider);
+             processTask(nextTask);
          }
      }
   }, [queue, config.maxConcurrent, config.taskInterval, tick, isGatewayAuthed, gatewayAuthChecked, gatewayAuthEnabled]);
@@ -1149,29 +1191,31 @@ export default function App() {
         previewPrompt = previewPrompt.replace('这是台词文案', '[台词文案]');
     }
 
-    if (workMode === 'video' && videoProvider === 'comfyui') {
-      const { createVideo } = comfyuiEndpoints(config.comfyuiBaseUrl);
-      const resolvedUrl = typeof window !== 'undefined' && String(createVideo || '').startsWith('/')
-          ? `${window.location.origin}${String(createVideo)}`
-          : String(createVideo || '');
+    if (workMode === 'video' && config.videoApiMode === 'videos') {
+      const videosBase = resolveVideosBaseUrl(config.baseUrl);
+      const resolvedUrl = typeof window !== 'undefined' && String(videosBase || '').startsWith('/')
+        ? `${window.location.origin}${String(videosBase)}`
+        : String(videosBase || '');
       const authLine = config.apiKey ? `  -H "Authorization: Bearer ${config.apiKey}" \\\n` : '';
+      const seconds = parseVideoSeconds(duration);
 
-      const seconds = parseInt(String(duration || ''), 10);
       const previewJson = {
         prompt: previewPrompt,
-        ...(Number.isFinite(seconds) ? { duration: seconds } : {}),
-        size: orientation === 'portrait' ? '720x1280' : '1280x720',
-        ...(selectedModelName ? { model: selectedModelName } : {}),
-        ...(generationType === 'image' ? { image: activeProject.image || 'data:image/...' } : {}),
+        model: String(selectedModelName || 'sora-2'),
+        ...(Number.isFinite(seconds) ? { seconds } : {}),
+        size: getVideoSizeByOrientation(orientation),
+        ...(generationType === 'image' ? { input_reference: activeProject.image || 'data:image/...' } : {}),
       };
-      if (generationType === 'image' && typeof previewJson.image === 'string' && previewJson.image.length > 100) {
-        previewJson.image = 'data:image/...[已截断]';
+
+      if (generationType === 'image' && typeof previewJson.input_reference === 'string' && previewJson.input_reference.length > 120) {
+        previewJson.input_reference = 'data:image/...[已截断]';
       }
 
       const cmd = `curl -X POST "${resolvedUrl}" \\\n${authLine}  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(previewJson, null, 2)}'`;
       setCurlPreview(cmd);
       return;
     }
+
     const content = generationType === 'text'
         ? previewPrompt
         : [{ type: "text", text: previewPrompt }, { type: "image_url", image_url: { url: activeProject.image || "data:image/..." } }];
@@ -1192,7 +1236,7 @@ export default function App() {
     const authLine = config.apiKey ? `  -H "Authorization: Bearer ${config.apiKey}" \\\n` : '';
     const cmd = `curl -X POST "${resolvedUrl}" \\\n${authLine}  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(previewJson, null, 2)}'`;
     setCurlPreview(cmd);
-  }, [config, activeProject, selectedModelName, generationType, workMode, videoProvider, orientation, duration]);
+  }, [config, activeProject, selectedModelName, generationType, workMode, orientation, duration]);
 
   // --- 处理器 ---
 
@@ -1297,10 +1341,10 @@ export default function App() {
           const templateRows = [
               ['序号', '提示词', '横竖屏', '时长', '图片地址', '次数', '说明'],
               ['说明', '填写视频描述（必填）', '1=横屏 2=竖屏（批量模式会按界面方向统一覆盖）', '1=10s 2=15s 3=15s高清PRO 4=25sPRO', '可选，图生视频需要（示例：1.png）', '可选，不填默认1次', '模型将按时长码自动选择并替换横竖屏'],
-              [1, '清晨森林小路，镜头缓慢推进，薄雾缭绕。', '', 1, '1.png', 1, '映射 sora2-portrait-10s / sora2-landscape-10s'],
+              [1, '清晨森林小路，镜头缓慢推进，薄雾缭绕。', '', 1, '1.png', 1, '映射 sora-2（10s）'],
               [2, '城市夜景延时摄影，灯光流动，氛围电影感。', '', 2, '', 1, '无图片则按文生视频提交'],
-              [3, '雨中霓虹街道，角色转身，光影反射。', '', 3, '3.png', 2, '映射 sora2pro-hd-*-15s，重复2次'],
-              [4, '星空下山脊广角镜头，缓慢拉远。', '', 4, '4.png', 1, '映射 sora2pro-*-25s'],
+              [3, '雨中霓虹街道，角色转身，光影反射。', '', 3, '3.png', 2, '映射 sora-2-pro（15s），重复2次'],
+              [4, '星空下山脊广角镜头，缓慢拉远。', '', 4, '4.png', 1, '映射 sora-2-pro（25s）'],
           ];
 
           const ws = XLSX.utils.aoa_to_sheet(templateRows);
@@ -1457,7 +1501,9 @@ export default function App() {
           const finalPrompt = buildPromptFromScript(script);
           const repeat = Math.max(1, parseInt(row?.repeatCount, 10) || 1);
           const rowLabel = Number.isFinite(row?.rowIndex) ? `第 ${row.rowIndex} 行` : '某行';
-          const modelUsed = resolveExcelVideoModel(parseInt(row?.durationCode, 10), excelBatchOrientation);
+          const spec = resolveExcelVideoSpec(parseInt(row?.durationCode, 10));
+          const modelUsed = spec.model;
+          const taskDuration = spec.duration;
 
           const imageMarker = String(row?.imageMarker || '');
           const matchedImage = imageMarker ? (excelBatchImageMap[imageMarker] || null) : null;
@@ -1470,10 +1516,11 @@ export default function App() {
           for (let i = 0; i < repeat; i += 1) {
               addToQueue(finalPrompt, script, {
                   mediaType: 'video',
-                  provider: 'sora',
                   generationType: taskGenerationType,
                   image: taskGenerationType === 'image' ? matchedImage : null,
                   modelUsed,
+                  videoDuration: taskDuration,
+                  videoOrientation: excelBatchOrientation,
               });
               addedCount += 1;
           }
@@ -1497,12 +1544,14 @@ export default function App() {
       const taskMediaType = overrides.mediaType === 'image' ? 'image' : (overrides.mediaType === 'video' ? 'video' : workMode);
       const taskGenerationType = overrides.generationType === 'text' ? 'text' : (overrides.generationType === 'image' ? 'image' : generationType);
       const taskImage = Object.prototype.hasOwnProperty.call(overrides, 'image') ? overrides.image : activeProject?.image;
-      const taskProvider = taskMediaType === 'video'
-          ? ((overrides.provider === 'comfyui' || overrides.provider === 'sora') ? overrides.provider : videoProvider)
-          : null;
+      const taskProvider = taskMediaType === 'video' ? 'sora' : null;
       const taskModelUsed = typeof overrides.modelUsed === 'string' && overrides.modelUsed
           ? overrides.modelUsed
           : (taskMediaType === 'image' ? selectedImageModelName : selectedVideoModelName);
+      const taskVideoOrientation = overrides.videoOrientation === 'landscape' ? 'landscape' : (overrides.videoOrientation === 'portrait' ? 'portrait' : orientation);
+      const taskVideoDuration = overrides.videoDuration === '10s' || overrides.videoDuration === '15s' || overrides.videoDuration === '25s'
+        ? overrides.videoDuration
+        : duration;
 
       const trimmedPrompt = String(prompt || '').trim();
       if (!trimmedPrompt) {
@@ -1536,7 +1585,11 @@ export default function App() {
           timestamp: new Date().toLocaleString(),
           modelUsed: taskModelUsed,
           image: taskGenerationType === 'image' ? taskImage : null,
-          generationType: taskGenerationType, 
+          generationType: taskGenerationType,
+          upstreamTaskId: '',
+          pollingType: null,
+          videoOrientation: taskVideoOrientation,
+          videoDuration: taskVideoDuration,
        };
       setQueue(prev => [newTask, ...prev]);
   };
@@ -1670,8 +1723,30 @@ export default function App() {
     }
   };
 
-  const processTask = async (taskId, taskPrompt, taskImage, taskType, taskModel, taskMediaType, taskProvider) => {
-      updateTask(taskId, { status: 'GENERATING', stage: '初始化中', progress: 0 });
+  const processTask = async (task) => {
+      const taskId = task?.id;
+      if (taskId === null || taskId === undefined) return;
+
+      const taskPrompt = String(task?.prompt || '');
+      const taskImage = task?.image || null;
+      const taskType = task?.generationType === 'text' ? 'text' : 'image';
+      const taskMediaType = task?.mediaType === 'image' ? 'image' : 'video';
+      const taskModel = String(
+        task?.modelUsed
+        || (taskMediaType === 'image' ? selectedImageModelName : selectedVideoModelName)
+        || (taskMediaType === 'image' ? 'gpt-image' : 'sora-2')
+      );
+      const taskProvider = taskMediaType === 'video' ? 'sora' : null;
+      const taskVideoDuration = task?.videoDuration === '10s' || task?.videoDuration === '15s' || task?.videoDuration === '25s'
+        ? task.videoDuration
+        : duration;
+      const taskVideoOrientation = task?.videoOrientation === 'landscape' ? 'landscape' : 'portrait';
+      const taskUpstreamTaskId = String(task?.upstreamTaskId || '').trim();
+      const useVideosApi = taskMediaType === 'video'
+        && (task?.pollingType === 'videos' || config.videoApiMode === 'videos');
+
+      updateTask(taskId, { status: 'GENERATING', stage: '初始化中', progress: 0, errorMessage: null });
+
       if (taskMediaType === 'image') {
           await (async () => {
               let hasReceivedData = false;
@@ -1832,7 +1907,7 @@ export default function App() {
                           if (typeof part.text === 'string') return part.text;
                           const url = part.image_url?.url;
                           return typeof url === 'string' ? url : '';
-                      }).join('\\n');
+                      }).join('\n');
                   } else if (typeof messageContent === 'string') {
                       messageText = messageContent;
                   } else if (messageContent != null) {
@@ -1851,109 +1926,152 @@ export default function App() {
            return;
        }
 
-       if (taskMediaType === 'video' && taskProvider === 'comfyui') {
-           try {
-               const base = String(config.comfyuiBaseUrl || '').trim();
-               if (!base) throw new Error('Missing ComfyUI2API base URL');
+      if (taskMediaType === 'video' && taskProvider === 'sora' && useVideosApi) {
+        try {
+          if (!config?.baseUrl) throw new Error('Missing API endpoint');
+          if (taskType !== 'text' && !taskImage) throw new Error('Missing input image');
+          const prompt = String(taskPrompt || '').trim();
+          if (!prompt) throw new Error('Prompt is empty');
 
-               const { createVideo, job } = comfyuiEndpoints(base);
+          const videosBase = resolveVideosBaseUrl(config.baseUrl);
+          const seconds = parseVideoSeconds(taskVideoDuration);
+          let upstreamId = taskUpstreamTaskId;
 
-               const prompt = String(taskPrompt || '').trim();
-               if (!prompt) throw new Error('Prompt is empty');
+          if (!upstreamId) {
+            updateTask(taskId, { stage: '创建任务中', progress: 3, pollingType: 'videos', streamLog: '' });
 
-               updateTask(taskId, { stage: 'Creating', progress: 1, streamLog: '' });
+            const payload = {
+              prompt,
+              model: String(taskModel || 'sora-2'),
+              ...(Number.isFinite(seconds) ? { seconds } : {}),
+              size: getVideoSizeByOrientation(taskVideoOrientation),
+              ...(taskType === 'image' ? { input_reference: taskImage } : {}),
+            };
 
-               const seconds = parseInt(String(duration || ''), 10);
-               const payload = {
-                   prompt,
-                   ...(taskModel ? { model: String(taskModel || '').trim() } : {}),
-                   ...(Number.isFinite(seconds) ? { duration: seconds } : {}),
-                   size: orientation === 'portrait' ? '720x1280' : '1280x720',
-               };
-               if (taskType !== 'text') payload.image = taskImage;
+            const createRes = await fetch(videosBase, {
+              method: 'POST',
+              headers: buildRequestHeaders(),
+              body: JSON.stringify(payload),
+            });
 
-               const createRes = await fetch(createVideo, {
-                   method: 'POST',
-                   headers: buildRequestHeaders(),
-                   body: JSON.stringify(payload)
-               });
-               if (!createRes.ok) {
-                   let errorMsg = `HTTP ${createRes.status}`;
-                   try {
-                       const errorText = await createRes.text();
-                       errorMsg = parseOpenAiLikeErrorMessage(errorText) || errorText || errorMsg;
-                   } catch (e) { }
-                   if ((createRes.status === 401 || createRes.status === 403) && createRes.headers.get('x-sora2-manager-auth')) {
-                     await refreshGatewayAuthStatus({ openModalOnNeed: true });
-                   }
-                   throw new Error(errorMsg);
-               }
+            if (!createRes.ok) {
+              let errorMsg = `HTTP ${createRes.status}`;
+              try {
+                const errorText = await createRes.text();
+                if (errorText) errorMsg = errorText;
+              } catch (e) { }
+              if ((createRes.status === 401 || createRes.status === 403) && createRes.headers.get('x-sora2-manager-auth')) {
+                await refreshGatewayAuthStatus({ openModalOnNeed: true });
+              }
+              throw new Error(errorMsg);
+            }
 
-               const created = await createRes.json();
-               const jobId = created?.task_id || created?.job_id || created?.id;
-               if (!jobId) throw new Error('Missing task_id from ComfyUI2API');
+            const created = await createRes.json();
+            upstreamId = extractVideoTaskId(created);
+            if (!upstreamId) throw new Error('创建任务成功但未返回 task id');
 
-               updateTask(taskId, { stage: 'Queued', progress: 2, streamLog: `job_id=${String(jobId)}` });
+            updateTask(taskId, {
+              status: 'PROCESSING',
+              stage: '任务已创建，等待轮询',
+              progress: 5,
+              upstreamTaskId: upstreamId,
+              pollingType: 'videos',
+              streamLog: JSON.stringify({ id: upstreamId, created }, null, 2).slice(-2000),
+            });
+          } else {
+            updateTask(taskId, {
+              status: 'PROCESSING',
+              stage: '恢复轮询中',
+              progress: Math.max(5, Number(task?.progress || 0)),
+              upstreamTaskId: upstreamId,
+              pollingType: 'videos',
+            });
+          }
 
-               const startedAt = Date.now();
-               const pollIntervalMs = 1200;
-               while (true) {
-                   await new Promise((r) => setTimeout(r, pollIntervalMs));
-                   const pollRes = await fetch(job(jobId), { headers: buildRequestHeaders() });
-                   if (!pollRes.ok) {
-                       let errorMsg = `HTTP ${pollRes.status}`;
-                       try {
-                           const errorText = await pollRes.text();
-                           errorMsg = parseOpenAiLikeErrorMessage(errorText) || errorText || errorMsg;
-                       } catch (e) { }
-                       throw new Error(errorMsg);
-                   }
+          const statusUrl = joinUrlPath(videosBase, encodeURIComponent(upstreamId));
+          const contentUrl = joinUrlPath(statusUrl, 'content');
+          const startedAt = Date.now();
+          const pollIntervalMs = 5000;
 
-                   const jobWrap = await pollRes.json();
-                   const jobObj = jobWrap?.job || jobWrap;
-                   const status = String(jobObj?.status || '').toLowerCase();
-                   const completed = status === 'completed';
-                   const failed = status === 'failed';
+          while (true) {
+            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+            const pollRes = await fetch(statusUrl, { headers: buildRequestHeaders() });
+            if (!pollRes.ok) {
+              let errorMsg = `HTTP ${pollRes.status}`;
+              try {
+                const errorText = await pollRes.text();
+                if (errorText) errorMsg = errorText;
+              } catch (e) { }
+              if ((pollRes.status === 401 || pollRes.status === 403) && pollRes.headers.get('x-sora2-manager-auth')) {
+                await refreshGatewayAuthStatus({ openModalOnNeed: true });
+              }
+              throw new Error(errorMsg);
+            }
 
-                   const pct = comfyuiProgressPercent(jobObj?.progress, { completed });
-                   const nodeLabel = jobObj?.current_node ? String(jobObj.current_node) : '';
-                   const stage = completed ? 'Done' : (nodeLabel ? `Node ${nodeLabel}` : (status || 'running'));
-                   const stream = JSON.stringify(
-                       { status: status || null, node: nodeLabel || null, progress: jobObj?.progress || null, url: jobObj?.url || null },
-                       null,
-                       2
-                   );
+            const data = await pollRes.json();
+            const rawStatus = normalizeVideoTaskStatus(
+              data?.status
+              || data?.state
+              || data?.task?.status
+              || data?.task?.state
+              || data?.data?.status
+              || data?.data?.state
+            );
+            const progress = parseVideoTaskProgress(
+              data?.progress,
+              data?.progress_percent,
+              data?.percentage,
+              data?.task?.progress,
+              data?.task?.progress_percent,
+              data?.data?.progress,
+              data?.data?.progress_percent
+            );
+            const stage = mapVideoTaskStage(rawStatus);
+            const streamLog = JSON.stringify(data, null, 2);
+            const snapshot = {
+              status: 'PROCESSING',
+              stage,
+              upstreamTaskId: upstreamId,
+              pollingType: 'videos',
+              streamLog: streamLog.length > 2000 ? `...${streamLog.slice(-2000)}` : streamLog,
+            };
+            if (progress !== null) snapshot.progress = progress;
+            updateTask(taskId, snapshot);
 
-                   updateTask(taskId, { stage, progress: pct, streamLog: stream.length > 2000 ? '...' + stream.slice(-2000) : stream });
+            const isCompleted = ['completed', 'succeeded', 'success', 'done'].includes(rawStatus);
+            const isFailed = ['failed', 'error', 'cancelled', 'canceled', 'expired'].includes(rawStatus);
+            if (isCompleted) {
+              const url = parseVideoTaskResultUrl(data) || contentUrl;
+              updateTask(taskId, {
+                status: 'COMPLETED',
+                stage: '已完成',
+                progress: 100,
+                videoUrl: url,
+                upstreamTaskId: upstreamId,
+                pollingType: 'videos',
+              });
+              if (window.electronAPI && (typeof window.electronAPI.downloadFile === 'function' || typeof window.electronAPI.downloadVideo === 'function')) {
+                triggerDownload(url, taskId, undefined, '.mp4');
+              }
+              return;
+            }
+            if (isFailed) {
+              const errorMsg = parseVideoTaskError(data) || `视频任务失败 (${rawStatus || 'unknown'})`;
+              throw new Error(errorMsg);
+            }
+            if (Date.now() - startedAt > 4 * 60 * 60 * 1000) {
+              throw new Error('视频任务轮询超时 (4h)');
+            }
+          }
+        } catch (err) {
+          addLog(`[任务 ${taskId}] /v1/videos 异常: ${err.message}`, 'error');
+          updateTask(taskId, { status: 'FAILED', stage: '错误', progress: 0, errorMessage: err.message });
+        }
+        return;
+      }
 
-                   if (completed) {
-                       const url = pickComfyuiVideoUrl(jobObj);
-                       if (!url) throw new Error('No video output URL');
-                        updateTask(taskId, { status: 'COMPLETED', stage: '已完成', progress: 100, videoUrl: url });
-                       if (window.electronAPI && (typeof window.electronAPI.downloadFile === 'function' || typeof window.electronAPI.downloadVideo === 'function')) {
-                           triggerDownload(url, taskId, undefined, '.mp4');
-                       }
-                       return;
-                   }
-
-                   if (failed) {
-                       const errMsg = parseOpenAiLikeErrorMessage(jobObj?.error) || (jobObj?.error ? String(jobObj.error) : '') || 'ComfyUI job failed';
-                       throw new Error(errMsg);
-                   }
-
-                   if (Date.now() - startedAt > 4 * 60 * 60 * 1000) {
-                       throw new Error('ComfyUI job timeout (4h)');
-                   }
-               }
-           } catch (err) {
-               addLog(`[任务 ${taskId}] ComfyUI 异常: ${err.message}`, 'error');
-               updateTask(taskId, { status: 'FAILED', stage: 'ERROR', progress: 0, errorMessage: err.message });
-           }
-           return;
-       }
-
-       let hasReceivedData = false;
-       let hasResolvedVideo = false;
+      let hasReceivedData = false;
+      let hasResolvedVideo = false;
 
       try {
           const content = taskType === 'text'
@@ -1975,7 +2093,7 @@ export default function App() {
           }
           const reader = response.body.getReader();
           const decoder = new TextDecoder();
-          let buffer = ""; 
+          let buffer = "";
           let accumulatedContent = "";
 
           while (true) {
@@ -1983,7 +2101,7 @@ export default function App() {
               if (done) break;
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split('\n');
-              buffer = lines.pop(); 
+              buffer = lines.pop();
 
               for (const line of lines) {
                   const trimmed = line.trim();
@@ -1995,7 +2113,7 @@ export default function App() {
                           if (data.error) throw new Error(data.error.message || "API Error");
                           const delta = data.choices?.[0]?.delta;
                           const combinedChunk = (delta?.content || "") + (delta?.reasoning_content || "");
-                          
+
                                if (combinedChunk) {
                                    if (hasResolvedVideo) continue;
                                    accumulatedContent += combinedChunk;
@@ -2008,36 +2126,28 @@ export default function App() {
                                   addLog(`[任务 ${taskId}] 开始接收数据流...`, 'info');
                                   updates.stage = '准备中';
                               }
-                              
-                              // --- 细分状态检测逻辑 ---
-                              // 1. 违规检测
+
                               if (accumulatedContent.includes("Content Policy Violation") || accumulatedContent.includes("content_violation")) {
                                   throw new Error("检测到内容违规 (Policy Violation)");
                               }
-                              // 2. 超时检测
                               if (accumulatedContent.includes("Generation timeout") || accumulatedContent.includes("timed out")) {
                                   throw new Error("生成超时 (Generation Timeout)");
                               }
-                              // 3. 降级检测 (警告)
                               if (accumulatedContent.includes("Falling back to normal video")) {
                                   updates.warning = "去水印失败";
                               }
-                              // 4. 去水印模式 (逻辑修正：移除 selection-tag)
                               if (accumulatedContent.includes("Watermark-free mode") || accumulatedContent.includes("Publishing video")) {
                                   updates.stage = '去水印中';
                                   updates.status = 'PROCESSING';
                               }
-                              // 5. 缓存/同步中
                               if (accumulatedContent.includes("caching") || accumulatedContent.includes("Preparing final response")) {
                                   updates.stage = '同步中';
                                   updates.status = 'CACHING';
                               }
-                              // 6. 图片心跳检测
                               if (accumulatedContent.includes("Image generation in progress")) {
                                   updates.stage = '图片生成中';
                               }
-                              
-                              // 7. 进度解析 (仅在普通渲染阶段更新)
+
                               const progressMatch = accumulatedContent.match(/Video Generation Progress\D*(\d+)%/gi);
                               if (progressMatch && !accumulatedContent.includes("Watermark-free mode")) {
                                   const lastMatch = progressMatch[progressMatch.length - 1];
@@ -2102,11 +2212,6 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50 text-gray-900 font-sans selection:bg-blue-100 selection:text-blue-900 overflow-hidden relative">
-      <datalist id="comfyui-models-datalist">
-        {(Array.isArray(comfyuiWorkflowSuggestions) ? comfyuiWorkflowSuggestions : []).map((m) => (
-          <option key={String(m?.id || '')} value={String(m?.id || '')} label={m?.kind ? String(m.kind) : undefined} />
-        ))}
-      </datalist>
       {workMode === 'image' && (
         <>
           <header className="h-16 border-b border-gray-200 bg-white flex items-center justify-between px-6 z-10 shrink-0 shadow-sm">
@@ -2318,7 +2423,7 @@ export default function App() {
       <header className="h-16 border-b border-gray-200 bg-white flex items-center justify-between px-6 z-10 shrink-0 shadow-sm">
           <div className="flex items-center gap-6">
               <h1 className="text-gray-900 font-bold text-lg tracking-wide flex items-center gap-2">
-                <div className="w-3 h-3 bg-blue-600 rounded-full"></div> {videoProvider === 'comfyui' ? 'ComfyUI 视频生成' : 'Sora 视频生成'}
+                <div className="w-3 h-3 bg-blue-600 rounded-full"></div> Sora 视频生成
               </h1>
               <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
                   <button onClick={() => setWorkMode('video')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${workMode === 'video' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Video</button>
@@ -2449,7 +2554,7 @@ export default function App() {
                                             <button onClick={() => setExcelBatchOrientation('portrait')} className={`px-3 py-2 text-xs font-bold rounded-lg border ${excelBatchOrientation === 'portrait' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>竖屏（portrait）</button>
                                         </div>
                                         <div className="text-[11px] text-gray-500">
-                                            模型自动映射：1→sora2-*-10s，2→sora2-*-15s，3→sora2pro-hd-*-15s，4→sora2pro-*-25s（* 为当前批量方向）
+                                            模型自动映射：1→sora-2(10s)，2→sora-2(15s)，3→sora-2-pro(15s)，4→sora-2-pro(25s)；方向统一替换为当前批量方向
                                         </div>
                                     </div>
 
@@ -2480,7 +2585,8 @@ export default function App() {
                                                 </thead>
                                                 <tbody>
                                                     {excelBatchRows.map((row) => {
-                                                        const model = resolveExcelVideoModel(parseInt(row?.durationCode, 10), excelBatchOrientation);
+                                                        const spec = resolveExcelVideoSpec(parseInt(row?.durationCode, 10));
+                                                        const model = `${spec.model} (${spec.duration}, ${excelBatchOrientation})`;
                                                         const marker = String(row?.imageMarker || '');
                                                         const hasMarker = Boolean(marker);
                                                         const hasMappedImage = hasMarker ? Boolean(excelBatchImageMap[marker]) : false;
@@ -2519,67 +2625,39 @@ export default function App() {
                         <div className="lg:col-span-4 flex flex-col gap-6 bg-gray-50 p-6 rounded-xl border border-gray-100">
                             {workMode === 'video' ? (
                                 <>
-                            <div className="space-y-3">
-                                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Provider</label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <button onClick={() => setVideoProvider('sora')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${videoProvider === 'sora' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>Sora2API</button>
-                                    <button onClick={() => setVideoProvider('comfyui')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${videoProvider === 'comfyui' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>ComfyUI</button>
-                                </div>
-                            </div>
-
-                            {videoProvider === 'sora' ? (
-                            <div className="space-y-3">
-                                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Model</label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <button onClick={() => setModelFamily('sora2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2</button>
-                                    <button onClick={() => setModelFamily('sora2pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro</button>
-                                    <button onClick={() => setModelFamily('sora2pro-hd')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro-hd' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro-高清</button>
-                                    <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-短</button>
-                                    <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-中</button>
-                                    <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-长</button>
-                                </div>
-                            </div>
-                            ) : (
-                                <div className="space-y-3">
-                                    <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ComfyUI Workflow/Model (optional)</label>
-                                    <div className="flex items-center gap-2">
-                                      <input list="comfyui-models-datalist" type="text" value={String(comfyuiModel || '')} onChange={(e) => setComfyuiModel(e.target.value)} placeholder="留空使用 comfyui2api 默认工作流；可填：img2video.json" className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-blue-500 shadow-sm" />
-                                      <button onClick={loadComfyuiModels} disabled={comfyuiModelsLoading} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all flex items-center gap-2 ${comfyuiModelsLoading ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'}`}>
-                                        {comfyuiModelsLoading ? <IconLoader size={14} /> : <IconLink size={14} />}
-                                        {comfyuiModelsLoading ? '加载中' : '加载工作流'}
-                                      </button>
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">视频接口</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/videos</button>
+                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/chat/completions</button>
+                                        </div>
                                     </div>
-                                    {comfyuiModelsError ? (
-                                      <div className="text-xs text-red-600">{String(comfyuiModelsError || '')}</div>
-                                    ) : (
-                                      <div className="text-[10px] text-gray-400">
-                                        可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span>（网关：<span className="font-mono">/comfyui/v1/models</span>）
-                                        {comfyuiModelsTotalCount > 0 && (
-                                          <span className="ml-2">已加载 {comfyuiModelsTotalCount} 个{comfyuiModelsShowingFiltered ? `（当前仅显示 ${desiredComfyuiWorkflowKind}：${comfyuiModelsForVideoKind.length} 个）` : ''}</span>
-                                        )}
-                                      </div>
-                                    )}
-                                </div>
-                            )}
-                            <div className="space-y-3">
-                                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">画面方向</label>
-                                <div className="grid grid-cols-2 gap-2">
-                                    <button onClick={() => setOrientation('landscape')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${orientation === 'landscape' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>横屏</button>
-                                    <button onClick={() => setOrientation('portrait')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${orientation === 'portrait' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>竖屏</button>
-                                </div>
-                            </div>
-                            <div className="space-y-3">
-                                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">时长</label>
-                                <div className="grid grid-cols-3 gap-2">
-                                    <button onClick={() => setDuration('10s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '10s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>10秒</button>
-                                    <button onClick={() => setDuration('15s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '15s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>15秒</button>
-                                    <button onClick={() => setDuration('25s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '25s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>25秒(PRO)</button>
-                                </div>
-                            </div>
-                            <div className="space-y-3">
-                                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
-                                <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedModelName)}</div>
-                            </div>
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Model</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button onClick={() => setModelFamily('sora-2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora-2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora-2</button>
+                                            <button onClick={() => setModelFamily('sora-2-pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora-2-pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora-2-pro</button>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">画面方向</label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button onClick={() => setOrientation('landscape')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${orientation === 'landscape' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>横屏</button>
+                                            <button onClick={() => setOrientation('portrait')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${orientation === 'portrait' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>竖屏</button>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">时长</label>
+                                        <div className="grid grid-cols-3 gap-2">
+                                            <button onClick={() => setDuration('10s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '10s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>10秒</button>
+                                            <button onClick={() => setDuration('15s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '15s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>15秒</button>
+                                            <button onClick={() => setDuration('25s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '25s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>25秒(PRO)</button>
+                                        </div>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">当前模型</label>
+                                        <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedVideoModelName)}</div>
+                                    </div>
                                 </>
                             ) : (
                                 <>
@@ -2593,7 +2671,7 @@ export default function App() {
                                     </div>
                                     <div className="space-y-3">
                                         <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Current Model</label>
-                                        <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedModelName)}</div>
+                                        <div className="w-full bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-600 font-mono flex items-center gap-2 shadow-sm"><IconLink size={14} className="text-gray-400"/>{String(selectedImageModelName)}</div>
                                     </div>
                                 </>
                             )}
@@ -2904,7 +2982,7 @@ export default function App() {
                   <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100">
                       <div className="min-w-0">
                           <h3 className="font-bold text-gray-900 text-lg">设置</h3>
-                          <div className="text-[11px] text-gray-500 mt-0.5 truncate">统一使用 `v1/chat/completions` 接口</div>
+                          <div className="text-[11px] text-gray-500 mt-0.5 truncate">视频可切换 `/v1/videos` 或 `/v1/chat/completions`</div>
                       </div>
                       <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-900 hover:bg-gray-100 p-2 rounded-lg transition-colors" title="关闭">
                           <IconX size={20}/>
@@ -2926,47 +3004,20 @@ export default function App() {
                           {workMode === 'video' ? (
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                   <div className="space-y-2">
-                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Video Provider</label>
+                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">视频接口</label>
                                       <div className="grid grid-cols-2 gap-2">
-                                          <button onClick={() => setVideoProvider('sora')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${videoProvider === 'sora' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>Sora2API</button>
-                                          <button onClick={() => setVideoProvider('comfyui')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${videoProvider === 'comfyui' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>ComfyUI</button>
+                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/videos</button>
+                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/chat/completions</button>
                                       </div>
                                   </div>
 
-                                  {videoProvider === 'sora' ? (
-                                      <div className="space-y-2">
-                                          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Video Model</label>
-                                          <div className="grid grid-cols-2 gap-2">
-                                              <button onClick={() => setModelFamily('sora2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2</button>
-                                              <button onClick={() => setModelFamily('sora2pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro</button>
-                                              <button onClick={() => setModelFamily('sora2pro-hd')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora2pro-hd' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora2pro-高清</button>
-                                              <button onClick={() => setModelFamily('prompt-enhance-short')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-short' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-短</button>
-                                              <button onClick={() => setModelFamily('prompt-enhance-medium')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-medium' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-中</button>
-                                              <button onClick={() => setModelFamily('prompt-enhance-long')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'prompt-enhance-long' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>提示增强-长</button>
-                                          </div>
+                                  <div className="space-y-2">
+                                      <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Video Model</label>
+                                      <div className="grid grid-cols-2 gap-2">
+                                          <button onClick={() => setModelFamily('sora-2')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora-2' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora-2</button>
+                                          <button onClick={() => setModelFamily('sora-2-pro')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${modelFamily === 'sora-2-pro' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>sora-2-pro</button>
                                       </div>
-                                  ) : (
-                                      <div className="space-y-2">
-                                          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">ComfyUI Workflow/Model (optional)</label>
-                                          <div className="flex items-center gap-2">
-                                            <input list="comfyui-models-datalist" type="text" value={String(comfyuiModel || '')} onChange={(e) => setComfyuiModel(e.target.value)} placeholder="留空使用 comfyui2api 默认工作流；可填：img2video.json" className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-blue-500 shadow-sm" />
-                                            <button onClick={loadComfyuiModels} disabled={comfyuiModelsLoading} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all flex items-center gap-2 ${comfyuiModelsLoading ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300 hover:bg-gray-50'}`}>
-                                              {comfyuiModelsLoading ? <IconLoader size={14} /> : <IconLink size={14} />}
-                                              {comfyuiModelsLoading ? '加载中' : '加载工作流'}
-                                            </button>
-                                          </div>
-                                          {comfyuiModelsError ? (
-                                            <div className="text-xs text-red-600">{String(comfyuiModelsError || '')}</div>
-                                          ) : (
-                                            <div className="text-[10px] text-gray-400">
-                                              可用模型列表：ComfyUI2API 的 <span className="font-mono">GET /v1/models</span>（网关：<span className="font-mono">/comfyui/v1/models</span>）
-                                              {comfyuiModelsTotalCount > 0 && (
-                                                <span className="ml-2">已加载 {comfyuiModelsTotalCount} 个{comfyuiModelsShowingFiltered ? `（当前仅显示 ${desiredComfyuiWorkflowKind}：${comfyuiModelsForVideoKind.length} 个）` : ''}</span>
-                                              )}
-                                            </div>
-                                          )}
-                                      </div>
-                                  )}
+                                  </div>
                                   <div className="space-y-4">
                                       <div className="space-y-2">
                                           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">画面方向</label>
@@ -3099,10 +3150,12 @@ export default function App() {
                                   <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> API 地址 (Endpoint)</label>
                                   <input type="text" value={String(config.baseUrl || '')} onChange={(e) => setConfig({...config, baseUrl: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
                               </div>
-                              <div className="space-y-2 md:col-span-2">
-                                  <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> ComfyUI2API Base URL</label>
-                                  <input type="text" value={String(config.comfyuiBaseUrl || '')} onChange={(e) => setConfig({...config, comfyuiBaseUrl: e.target.value})} placeholder="例如: http://127.0.0.1:8000" className="w-full bg-white border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all" />
-                                  <div className="text-[10px] text-gray-400">Video Provider=ComfyUI 时使用（会自动拼接 /v1）</div>
+                              <div className="space-y-2">
+                                  <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> 视频接口模式</label>
+                                  <div className="grid grid-cols-2 gap-2">
+                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/videos</button>
+                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/chat/completions</button>
+                                  </div>
                               </div>
                               <div className="space-y-2">
                                   <label className="text-xs font-semibold text-gray-500 uppercase">API 密钥 (Key，可选)</label>
