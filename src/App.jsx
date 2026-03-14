@@ -2634,8 +2634,8 @@ export default function App() {
                                     <div className="space-y-3">
                                         <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">视频接口</label>
                                         <div className="grid grid-cols-2 gap-2">
-                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/videos</button>
-                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/chat/completions</button>
+                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>videos</button>
+                                            <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>completion</button>
                                         </div>
                                     </div>
                                     <div className="space-y-3">
@@ -2826,7 +2826,11 @@ export default function App() {
                                                             </button>
                                                         </div>
                                                     )}
-                                                    {(task.status === 'GENERATING' || task.status === 'STARTING') && (
+                                                    {(task.status === 'GENERATING'
+                                                      || task.status === 'STARTING'
+                                                      || task.status === 'PENDING'
+                                                      || (task.status === 'PROCESSING' && /排队|队列|queued|pending|submitted|created/i.test(String(task.stage || '')))
+                                                    ) && (
                                                         <div className="absolute bottom-0 left-0 right-0 h-1 bg-gray-200">
                                                             <div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${task.progress}%` }}></div>
                                                         </div>
@@ -2988,7 +2992,7 @@ export default function App() {
                   <div className="flex justify-between items-center px-6 py-4 border-b border-gray-100">
                       <div className="min-w-0">
                           <h3 className="font-bold text-gray-900 text-lg">设置</h3>
-                          <div className="text-[11px] text-gray-500 mt-0.5 truncate">视频可切换 `/v1/videos` 或 `/v1/chat/completions`</div>
+                          <div className="text-[11px] text-gray-500 mt-0.5 truncate">视频可切换 videos 或 completion</div>
                       </div>
                       <button onClick={() => setShowSettings(false)} className="text-gray-400 hover:text-gray-900 hover:bg-gray-100 p-2 rounded-lg transition-colors" title="关闭">
                           <IconX size={20}/>
@@ -3012,8 +3016,8 @@ export default function App() {
                                   <div className="space-y-2">
                                       <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">视频接口</label>
                                       <div className="grid grid-cols-2 gap-2">
-                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/videos</button>
-                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/chat/completions</button>
+                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>videos</button>
+                                          <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>completion</button>
                                       </div>
                                   </div>
 
@@ -3159,8 +3163,8 @@ export default function App() {
                               <div className="space-y-2">
                                   <label className="text-xs font-semibold text-gray-500 uppercase flex items-center gap-2"><IconLink size={12}/> 视频接口模式</label>
                                   <div className="grid grid-cols-2 gap-2">
-                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/videos</button>
-                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>/v1/chat/completions</button>
+                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'videos' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'videos' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>videos</button>
+                                      <button onClick={() => setConfig({ ...config, videoApiMode: 'chat_completions' })} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${config.videoApiMode === 'chat_completions' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>completion</button>
                                   </div>
                               </div>
                               <div className="space-y-2">
@@ -3454,22 +3458,27 @@ export default function App() {
 const StatusBadge = ({ status, stage, progress, warning }) => {
     let styles = "bg-gray-100 text-gray-500 border-gray-200";
     let text = status;
+    const progressNumber = Number.isFinite(Number(progress)) ? Math.max(0, Math.min(100, Math.round(Number(progress)))) : 0;
+    const stageText = String(stage || '');
+    const isQueueStage = status === 'PENDING'
+      || (status === 'PROCESSING' && /排队|队列|queued|pending|submitted|created/i.test(stageText));
 
-    if (status === 'GENERATING' || status === 'STARTING') {
+    if (status === 'GENERATING' || status === 'STARTING' || isQueueStage) {
+        const label = stageText || (isQueueStage ? '排队中' : '生成中');
         return (
             <div className="flex flex-col gap-1 w-full max-w-[120px]">
-                <div className="flex justify-between items-center text-[10px] text-blue-600 font-bold uppercase"><span>{String(stage || '')}</span><span>{String(progress || 0)}%</span></div>
-                <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${progress}%` }} /></div>
+                <div className="flex justify-between items-center text-[10px] text-blue-600 font-bold uppercase"><span>{label}</span><span>{String(progressNumber)}%</span></div>
+                <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden"><div className="h-full bg-blue-500 transition-all duration-300" style={{ width: `${progressNumber}%` }} /></div>
             </div>
         );
     }
 
     if (status === 'PROCESSING') {
         styles = "bg-indigo-50 text-indigo-600 border-indigo-200 animate-pulse";
-        text = stage || "去水印中";
+        text = `${stage || "去水印中"} ${progressNumber}%`;
     } else if (status === 'CACHING') {
         styles = "bg-purple-50 text-purple-600 border-purple-200 animate-pulse";
-        text = stage || "同步中";
+        text = `${stage || "同步中"} ${progressNumber}%`;
     } else if (status === 'COMPLETED') {
         if (warning) {
             styles = "bg-yellow-50 text-yellow-600 border-yellow-200";
