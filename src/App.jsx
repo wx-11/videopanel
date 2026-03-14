@@ -154,6 +154,7 @@ const DEFAULT_UI_STATE = {
   activeProjectId: 1,
   videoProvider: 'sora',
   comfyuiModel: '',
+  videoTaskMode: 'image',
   orientation: 'portrait',
   duration: '15s',
   modelFamily: 'sora2',
@@ -201,6 +202,7 @@ const getInitialUiState = () => {
   const allowedVideoProviders = new Set(['sora', 'comfyui']);
   const allowedWorkModes = new Set(['video', 'image']);
   const allowedImageModels = new Set(['gpt-image', 'gpt-image-landscape', 'gpt-image-portrait']);
+  const allowedVideoTaskModes = new Set(['text', 'image', 'batch']);
 
   return {
     ...DEFAULT_UI_STATE,
@@ -208,13 +210,16 @@ const getInitialUiState = () => {
     activeProjectId,
     videoProvider: (typeof saved.videoProvider === 'string' && allowedVideoProviders.has(saved.videoProvider)) ? saved.videoProvider : DEFAULT_UI_STATE.videoProvider,
     comfyuiModel: typeof saved.comfyuiModel === 'string' ? saved.comfyuiModel : DEFAULT_UI_STATE.comfyuiModel,
+    videoTaskMode: (typeof saved.videoTaskMode === 'string' && allowedVideoTaskModes.has(saved.videoTaskMode))
+      ? saved.videoTaskMode
+      : (saved.generationType === 'text' ? 'text' : DEFAULT_UI_STATE.videoTaskMode),
     orientation: saved.orientation === 'landscape' || saved.orientation === 'portrait' ? saved.orientation : DEFAULT_UI_STATE.orientation,
-    duration: saved.duration === '10s' || saved.duration === '15s' ? saved.duration : DEFAULT_UI_STATE.duration,
+    duration: saved.duration === '10s' || saved.duration === '15s' || saved.duration === '25s' ? saved.duration : DEFAULT_UI_STATE.duration,
     modelFamily: (typeof saved.modelFamily === 'string' && allowedModelFamilies.has(saved.modelFamily)) ? saved.modelFamily : DEFAULT_UI_STATE.modelFamily,
     imageModel: (typeof saved.imageModel === 'string' && allowedImageModels.has(saved.imageModel)) ? saved.imageModel : DEFAULT_UI_STATE.imageModel,
     generationType: saved.generationType === 'text' || saved.generationType === 'image' ? saved.generationType : DEFAULT_UI_STATE.generationType,
     recordsScope: saved.recordsScope === 'all' ? 'all' : DEFAULT_UI_STATE.recordsScope,
-    batchMode: saved.batchMode === 'repeat' || saved.batchMode === 'script' || saved.batchMode === 'excel' ? saved.batchMode : DEFAULT_UI_STATE.batchMode,
+    batchMode: saved.batchMode === 'repeat' || saved.batchMode === 'script' ? saved.batchMode : DEFAULT_UI_STATE.batchMode,
     repeatCount: Math.max(1, parseInt(saved.repeatCount, 10) || DEFAULT_UI_STATE.repeatCount),
   };
 };
@@ -528,6 +533,31 @@ const normalizeImageMarker = (value) => {
   return fileName.toLowerCase();
 };
 
+const parseExcelDurationCode = (value) => {
+  const raw = toPlainText(value);
+  if (!raw) return 2;
+
+  const numeric = parseInt(raw, 10);
+  if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 4) return numeric;
+
+  const lowered = raw.toLowerCase();
+  if (lowered.includes('25')) return 4;
+  if (lowered.includes('高清') || lowered.includes('pro-hd') || lowered.includes('prohd') || lowered.includes('hd')) return 3;
+  if (lowered.includes('10')) return 1;
+  if (lowered.includes('15')) return 2;
+  return 2;
+};
+
+const resolveExcelVideoModel = (durationCode, orientation = 'portrait') => {
+  const safeOrientation = orientation === 'landscape' ? 'landscape' : 'portrait';
+  const code = Number.isFinite(durationCode) ? durationCode : 2;
+  if (code === 1) return `sora2-${safeOrientation}-10s`;
+  if (code === 2) return `sora2-${safeOrientation}-15s`;
+  if (code === 3) return `sora2pro-hd-${safeOrientation}-15s`;
+  if (code === 4) return `sora2pro-${safeOrientation}-25s`;
+  return `sora2-${safeOrientation}-15s`;
+};
+
 const findHeaderIndex = (rows) => {
   if (!Array.isArray(rows)) return -1;
   for (let i = 0; i < rows.length; i += 1) {
@@ -552,6 +582,7 @@ const parseExcelScriptRows = (sheet) => {
   const headerRowIndex = findHeaderIndex(matrix);
   const headerRow = headerRowIndex >= 0 ? matrix[headerRowIndex] : matrix[0];
   const promptCol = findColumnIndex(headerRow, ['提示词', '台词', 'script', 'prompt'], 1);
+  const durationCol = findColumnIndex(headerRow, ['时长', 'duration', '秒'], 3);
   const imageCol = findColumnIndex(headerRow, ['图片地址', '图片', 'image', 'img'], 4);
   const repeatCol = findColumnIndex(headerRow, ['次数', '重复', 'count'], 5);
   const dataStart = (headerRowIndex >= 0 ? headerRowIndex : 0) + 1;
@@ -562,6 +593,7 @@ const parseExcelScriptRows = (sheet) => {
     const script = toPlainText(row[promptCol] ?? row[1]);
     if (!script) continue;
 
+    const durationRaw = toPlainText(row[durationCol] ?? row[3]);
     const imageMarkerRaw = toPlainText(row[imageCol] ?? row[4]);
     const repeatRaw = row[repeatCol] ?? row[5];
     const hintText = `${script} ${imageMarkerRaw} ${toPlainText(repeatRaw)}`;
@@ -574,6 +606,8 @@ const parseExcelScriptRows = (sheet) => {
     rows.push({
       rowIndex: i + 1,
       script,
+      durationRaw,
+      durationCode: parseExcelDurationCode(durationRaw),
       imageMarkerRaw,
       imageMarker: normalizeImageMarker(imageMarkerRaw),
       repeatCount,
@@ -625,7 +659,8 @@ export default function App() {
           : `${modelFamily}-${orientation}-${duration}`);
   const selectedImageModelName = imageModel;
   const selectedModelName = workMode === 'image' ? selectedImageModelName : selectedVideoModelName;
-  const [generationType, setGenerationType] = useState(() => initialUiState.generationType); 
+  const [generationType, setGenerationType] = useState(() => initialUiState.generationType);
+  const [videoTaskMode, setVideoTaskMode] = useState(() => initialUiState.videoTaskMode || (initialUiState.generationType === 'text' ? 'text' : 'image'));
   const [recordsScope, setRecordsScope] = useState(() => initialUiState.recordsScope || 'project');
 
   const desiredComfyuiWorkflowKind = generationType === 'image' ? 'img2video' : 'txt2video';
@@ -645,6 +680,7 @@ export default function App() {
   const [excelBatchImageNames, setExcelBatchImageNames] = useState([]);
   const [excelBatchError, setExcelBatchError] = useState('');
   const [excelBatchLoading, setExcelBatchLoading] = useState(false);
+  const [excelBatchOrientation, setExcelBatchOrientation] = useState(() => initialUiState.orientation === 'landscape' ? 'landscape' : 'portrait');
   
   // --- App 状态 ---
   const [showDebug, setShowDebug] = useState(false);
@@ -947,6 +983,7 @@ export default function App() {
           activeProjectId,
           videoProvider,
           comfyuiModel,
+          videoTaskMode,
           orientation,
           duration,
           modelFamily,
@@ -963,7 +1000,7 @@ export default function App() {
     return () => {
       if (persistUiTimer.current) clearTimeout(persistUiTimer.current);
     };
-  }, [workMode, activeProjectId, videoProvider, comfyuiModel, orientation, duration, modelFamily, imageModel, generationType, recordsScope, batchMode, repeatCount]);
+  }, [workMode, activeProjectId, videoProvider, comfyuiModel, videoTaskMode, orientation, duration, modelFamily, imageModel, generationType, recordsScope, batchMode, repeatCount]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || !window.localStorage) return;
@@ -1334,7 +1371,7 @@ export default function App() {
   };
 
   const handleOpenBatchModal = () => {
-      if (batchMode !== 'excel' && generationType === 'image' && !activeProject.image) {
+      if (generationType === 'image' && !activeProject.image) {
           const typeLabel = workMode === 'video' ? '图生视频' : '图生图';
           addLog(`错误: ${typeLabel} 模式下必须上传项目图片。`, 'error');
           return;
@@ -1356,63 +1393,62 @@ export default function App() {
           for(let i=0; i<count; i++) {
               addToQueue(String(activeProject.prompt || ''), `重复任务 #${i + 1}`);
           }
-      } else if (batchMode === 'excel') {
-          if (!Array.isArray(excelBatchRows) || excelBatchRows.length === 0) {
-              addLog('请先上传并解析 Excel 模板。', 'error');
-              return;
-          }
-
-          let addedCount = 0;
-          const missingImageRows = [];
-
-          excelBatchRows.forEach((row) => {
-              const script = String(row?.script || '').trim();
-              if (!script) return;
-
-              const finalPrompt = buildPromptFromScript(script);
-              const repeat = Math.max(1, parseInt(row?.repeatCount, 10) || 1);
-              const rowLabel = Number.isFinite(row?.rowIndex) ? `第 ${row.rowIndex} 行` : '某行';
-
-              let matchedImage = activeProject?.image || null;
-              if (generationType === 'image' && row?.imageMarker) {
-                  matchedImage = excelBatchImageMap[row.imageMarker] || null;
-                  if (!matchedImage) {
-                      missingImageRows.push(`${rowLabel}(${row.imageMarkerRaw || row.imageMarker})`);
-                      return;
-                  }
-              }
-
-              if (generationType === 'image' && !matchedImage) {
-                  missingImageRows.push(`${rowLabel}(未提供图片)`);
-                  return;
-              }
-
-              for (let i = 0; i < repeat; i += 1) {
-                  addToQueue(finalPrompt, script, {
-                      mediaType: workMode,
-                      generationType,
-                      image: generationType === 'image' ? matchedImage : null,
-                      modelUsed: workMode === 'image' ? selectedImageModelName : selectedVideoModelName,
-                  });
-                  addedCount += 1;
-              }
-          });
-
-          if (missingImageRows.length > 0) {
-              const preview = missingImageRows.slice(0, 5).join('，');
-              const suffix = missingImageRows.length > 5 ? ` 等 ${missingImageRows.length} 行` : '';
-              addLog(`以下行缺少匹配图片，已跳过：${preview}${suffix}`, 'error');
-          }
-
-          if (addedCount <= 0) {
-              addLog('没有可提交的任务，请检查 Excel 内容和图片匹配。', 'error');
-              return;
-          }
-          addLog(`Excel 批量任务已加入队列：${addedCount} 个`, 'success');
       }
       setShowBatchModal(false);
       if (batchMode === 'script') setBatchScripts(['']);
-      if (batchMode === 'excel') clearExcelBatchState();
+  };
+
+  const handleExcelBatchAddToQueue = () => {
+      if (!ensureGatewayAuthed()) return;
+      if (!Array.isArray(excelBatchRows) || excelBatchRows.length === 0) {
+          addLog('请先上传并解析 Excel 模板。', 'error');
+          return;
+      }
+
+      let addedCount = 0;
+      const missingImageRows = [];
+
+      excelBatchRows.forEach((row) => {
+          const script = String(row?.script || '').trim();
+          if (!script) return;
+
+          const finalPrompt = buildPromptFromScript(script);
+          const repeat = Math.max(1, parseInt(row?.repeatCount, 10) || 1);
+          const rowLabel = Number.isFinite(row?.rowIndex) ? `第 ${row.rowIndex} 行` : '某行';
+          const modelUsed = resolveExcelVideoModel(parseInt(row?.durationCode, 10), excelBatchOrientation);
+
+          const imageMarker = String(row?.imageMarker || '');
+          const matchedImage = imageMarker ? (excelBatchImageMap[imageMarker] || null) : null;
+          if (imageMarker && !matchedImage) {
+              missingImageRows.push(`${rowLabel}(${row.imageMarkerRaw || imageMarker})`);
+              return;
+          }
+
+          const taskGenerationType = matchedImage ? 'image' : 'text';
+          for (let i = 0; i < repeat; i += 1) {
+              addToQueue(finalPrompt, script, {
+                  mediaType: 'video',
+                  provider: 'sora',
+                  generationType: taskGenerationType,
+                  image: taskGenerationType === 'image' ? matchedImage : null,
+                  modelUsed,
+              });
+              addedCount += 1;
+          }
+      });
+
+      if (missingImageRows.length > 0) {
+          const preview = missingImageRows.slice(0, 5).join('，');
+          const suffix = missingImageRows.length > 5 ? ` 等 ${missingImageRows.length} 行` : '';
+          addLog(`以下行缺少匹配图片，已跳过：${preview}${suffix}`, 'error');
+      }
+
+      if (addedCount <= 0) {
+          addLog('没有可提交的任务，请检查 Excel 内容和图片匹配。', 'error');
+          return;
+      }
+
+      addLog(`Excel 批量任务已加入队列：${addedCount} 个`, 'success');
   };
   
   const addToQueue = (prompt, scriptSnippet, overrides = {}) => {
@@ -2286,49 +2322,156 @@ export default function App() {
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                         <div className="lg:col-span-8 flex flex-col gap-6">
                             <div className="flex items-center gap-2 mb-2">
-                                <button onClick={() => setGenerationType('image')} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${generationType === 'image' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconImage size={16} /> {workMode === 'video' ? '图生视频' : '图生图'}</button>
-                                <button onClick={() => setGenerationType('text')} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${generationType === 'text' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconType size={16} /> {workMode === 'video' ? '文生视频' : '文生图'}</button>
+                                <button onClick={() => { setVideoTaskMode('image'); setGenerationType('image'); }} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${videoTaskMode === 'image' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconImage size={16} /> 图生视频</button>
+                                <button onClick={() => { setVideoTaskMode('text'); setGenerationType('text'); }} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${videoTaskMode === 'text' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconType size={16} /> 文生视频</button>
+                                <button onClick={() => setVideoTaskMode('batch')} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${videoTaskMode === 'batch' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconLayers size={16} /> 批量视频</button>
                             </div>
-                            <div className="space-y-2">
-                                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex justify-between">总提示词 (Master Prompt)<span className="text-xs text-blue-600 normal-case bg-blue-50 px-2 py-0.5 rounded">使用 "这是台词文案" 作为占位符</span></label>
-                                <textarea value={String(activeProject?.prompt || '')} onChange={(e) => updateActiveProject('prompt', e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-4 text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none min-h-[140px] font-mono text-sm leading-relaxed" placeholder="例如：一个精美的咖啡杯，这是台词文案，4k分辨率..." />
-                            </div>
-                            {generationType === 'image' && (
-                                <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
-                                    <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">项目图片</label>
-                                    <div className="relative group">
-                                        <input type="file" accept="image/*" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
-                                        <div className={`h-40 rounded-lg border-2 border-dashed flex items-center justify-center transition-colors ${activeProject?.image ? 'border-blue-500/50 bg-blue-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100'}`}>
-                                            {activeProject?.image ? (
-                                                <div className="flex items-center gap-4">
-                                                    <img src={String(activeProject.image)} alt="preview" className="h-32 rounded object-cover border border-gray-200 shadow-sm" />
-                                                    <div className="text-left">
-                                                        <div className="text-sm text-green-600 font-medium flex items-center gap-2"><IconCheck size={14} /> 已上传</div>
-                                                        <div className="text-xs text-gray-500 mt-1 max-w-[200px] truncate">{String(activeProject.imageName || '')}</div>
-                                                        <div className="text-xs text-blue-500 mt-1 cursor-pointer hover:underline">点击替换</div>
-                                                    </div>
+
+                            {videoTaskMode !== 'batch' ? (
+                                <>
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex justify-between">总提示词 (Master Prompt)<span className="text-xs text-blue-600 normal-case bg-blue-50 px-2 py-0.5 rounded">使用 "这是台词文案" 作为占位符</span></label>
+                                        <textarea value={String(activeProject?.prompt || '')} onChange={(e) => updateActiveProject('prompt', e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-4 text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none min-h-[140px] font-mono text-sm leading-relaxed" placeholder="例如：一个精美的咖啡杯，这是台词文案，4k分辨率..." />
+                                    </div>
+                                    {videoTaskMode === 'image' && (
+                                        <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
+                                            <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">项目图片</label>
+                                            <div className="relative group">
+                                                <input type="file" accept="image/*" onChange={handleFileUpload} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" />
+                                                <div className={`h-40 rounded-lg border-2 border-dashed flex items-center justify-center transition-colors ${activeProject?.image ? 'border-blue-500/50 bg-blue-50' : 'border-gray-300 bg-gray-50 hover:bg-gray-100'}`}>
+                                                    {activeProject?.image ? (
+                                                        <div className="flex items-center gap-4">
+                                                            <img src={String(activeProject.image)} alt="preview" className="h-32 rounded object-cover border border-gray-200 shadow-sm" />
+                                                            <div className="text-left">
+                                                                <div className="text-sm text-green-600 font-medium flex items-center gap-2"><IconCheck size={14} /> 已上传</div>
+                                                                <div className="text-xs text-gray-500 mt-1 max-w-[200px] truncate">{String(activeProject.imageName || '')}</div>
+                                                                <div className="text-xs text-blue-500 mt-1 cursor-pointer hover:underline">点击替换</div>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <div className="text-center text-gray-400"><IconPlus size={24} className="mx-auto mb-2 text-gray-300"/><span className="text-sm font-medium">点击上传项目图片</span></div>
+                                                    )}
                                                 </div>
-                                            ) : (
-                                                <div className="text-center text-gray-400"><IconPlus size={24} className="mx-auto mb-2 text-gray-300"/><span className="text-sm font-medium">点击上传项目图片</span></div>
-                                            )}
+                                            </div>
                                         </div>
+                                    )}
+                                    <div className="flex justify-end">
+                                        <button
+                                            onClick={handleAddSingleTask}
+                                            disabled={!isGatewayAuthed}
+                                            className={`px-5 py-2.5 rounded-lg text-sm font-bold shadow-sm transition-all ${
+                                              !isGatewayAuthed
+                                                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                                : 'bg-blue-600 text-white hover:bg-blue-700'
+                                            }`}
+                                            title={!isGatewayAuthed ? '请先输入访问密码' : undefined}
+                                        >
+                                            加入队列
+                                        </button>
+                                    </div>
+                                </>
+                            ) : (
+                                <div className="space-y-4">
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex justify-between">总提示词 (Master Prompt，可选)</label>
+                                        <textarea value={String(activeProject?.prompt || '')} onChange={(e) => updateActiveProject('prompt', e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-4 text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none min-h-[120px] font-mono text-sm leading-relaxed" placeholder="可选：使用“这是台词文案”占位，把每行台词注入主提示词。" />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+                                            <div className="text-xs font-semibold text-gray-600">1) 上传 Excel 模板</div>
+                                            <input ref={batchExcelFileInputRef} type="file" accept=".xlsx,.xls" onChange={handleBatchExcelTemplateUpload} className="hidden" />
+                                            <button onClick={() => batchExcelFileInputRef.current?.click()} disabled={excelBatchLoading} className={`w-full px-3 py-2 text-xs font-bold rounded-lg border transition-colors ${excelBatchLoading ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-blue-200 text-blue-700 hover:bg-blue-50'}`}>
+                                                {excelBatchLoading ? '解析中...' : '选择 Excel 文件'}
+                                            </button>
+                                            <div className="text-[11px] text-gray-500 break-all">
+                                                {excelBatchFileName ? `已加载：${excelBatchFileName}` : '支持 .xlsx/.xls，默认读取第一个工作表'}
+                                            </div>
+                                        </div>
+                                        <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+                                            <div className="text-xs font-semibold text-gray-600">2) 批量上传图片（可选）</div>
+                                            <input ref={batchExcelImagesInputRef} type="file" accept="image/*" multiple onChange={handleBatchExcelImagesUpload} className="hidden" />
+                                            <button onClick={() => batchExcelImagesInputRef.current?.click()} className="w-full px-3 py-2 text-xs font-bold rounded-lg border border-emerald-200 text-emerald-700 bg-white hover:bg-emerald-50 transition-colors">
+                                                选择多张图片
+                                            </button>
+                                            <div className="text-[11px] text-gray-500">
+                                                {excelBatchImageNames.length > 0 ? `已上传 ${excelBatchImageNames.length} 张图片` : '文件名需匹配“图片地址”列（如 1.png）'}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+                                        <div className="text-xs font-semibold text-gray-600">3) 批量方向（统一替换）</div>
+                                        <div className="grid grid-cols-2 gap-2">
+                                            <button onClick={() => setExcelBatchOrientation('landscape')} className={`px-3 py-2 text-xs font-bold rounded-lg border ${excelBatchOrientation === 'landscape' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>横屏（landscape）</button>
+                                            <button onClick={() => setExcelBatchOrientation('portrait')} className={`px-3 py-2 text-xs font-bold rounded-lg border ${excelBatchOrientation === 'portrait' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}>竖屏（portrait）</button>
+                                        </div>
+                                        <div className="text-[11px] text-gray-500">
+                                            模型自动映射：1→sora2-*-10s，2→sora2-*-15s，3→sora2pro-hd-*-15s，4→sora2pro-*-25s（* 为当前批量方向）
+                                        </div>
+                                    </div>
+
+                                    {excelBatchError && (
+                                        <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                                            {String(excelBatchError || '')}
+                                        </div>
+                                    )}
+
+                                    <div className="text-xs text-gray-600 bg-white border border-gray-200 rounded-lg px-3 py-2">
+                                        已解析 <span className="font-semibold">{excelBatchRows.length}</span> 行，
+                                        需要匹配图片 <span className="font-semibold">{excelRowsWithImageMarker.length}</span> 行，
+                                        已匹配 <span className="font-semibold text-emerald-600">{excelMatchedImageCount}</span> 行
+                                    </div>
+
+                                    {excelBatchRows.length > 0 && (
+                                        <div className="max-h-[280px] overflow-auto rounded-lg border border-gray-200 bg-white">
+                                            <table className="w-full text-xs">
+                                                <thead className="bg-gray-50 text-gray-500">
+                                                    <tr>
+                                                        <th className="px-3 py-2 text-left font-semibold">行号</th>
+                                                        <th className="px-3 py-2 text-left font-semibold">台词</th>
+                                                        <th className="px-3 py-2 text-left font-semibold">图片标记</th>
+                                                        <th className="px-3 py-2 text-left font-semibold">次数</th>
+                                                        <th className="px-3 py-2 text-left font-semibold">时长码</th>
+                                                        <th className="px-3 py-2 text-left font-semibold">自动模型</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {excelBatchRows.map((row) => {
+                                                        const model = resolveExcelVideoModel(parseInt(row?.durationCode, 10), excelBatchOrientation);
+                                                        const marker = String(row?.imageMarker || '');
+                                                        const hasMarker = Boolean(marker);
+                                                        const hasMappedImage = hasMarker ? Boolean(excelBatchImageMap[marker]) : false;
+                                                        const markerLabel = hasMarker ? (hasMappedImage ? '已匹配' : '缺图') : '无';
+                                                        const markerClass = hasMarker ? (hasMappedImage ? 'text-emerald-600' : 'text-red-600') : 'text-gray-500';
+                                                        return (
+                                                            <tr key={`${row.rowIndex}-${row.script}`} className="border-t border-gray-100">
+                                                                <td className="px-3 py-2 align-top text-gray-500">{row.rowIndex}</td>
+                                                                <td className="px-3 py-2 align-top text-gray-800 max-w-[360px]">
+                                                                    <div className="truncate" title={String(row.script || '')}>{String(row.script || '')}</div>
+                                                                </td>
+                                                                <td className={`px-3 py-2 align-top font-semibold ${markerClass}`}>{hasMarker ? `${row.imageMarkerRaw || marker} (${markerLabel})` : '-'}</td>
+                                                                <td className="px-3 py-2 align-top text-gray-600">{row.repeatCount}</td>
+                                                                <td className="px-3 py-2 align-top text-gray-600">{row.durationRaw || row.durationCode}</td>
+                                                                <td className="px-3 py-2 align-top text-blue-700 font-mono">{model}</td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+
+                                    <div className="flex justify-between gap-3">
+                                        <button onClick={clearExcelBatchState} className="px-4 py-2.5 text-xs font-medium text-gray-600 hover:text-gray-900 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
+                                            清空导入数据
+                                        </button>
+                                        <button onClick={handleExcelBatchAddToQueue} disabled={!isGatewayAuthed} className={`px-5 py-2.5 rounded-lg text-sm font-bold shadow-sm transition-all ${!isGatewayAuthed ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`} title={!isGatewayAuthed ? '请先输入访问密码' : undefined}>
+                                            按顺序加入队列
+                                        </button>
                                     </div>
                                 </div>
                             )}
-                            <div className="flex justify-end">
-                                <button
-                                    onClick={handleAddSingleTask}
-                                    disabled={!isGatewayAuthed}
-                                    className={`px-5 py-2.5 rounded-lg text-sm font-bold shadow-sm transition-all ${
-                                      !isGatewayAuthed
-                                        ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                                        : (workMode === 'image' ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-blue-600 text-white hover:bg-blue-700')
-                                    }`}
-                                    title={!isGatewayAuthed ? '请先输入访问密码' : undefined}
-                                >
-                                    {workMode === 'image' ? '发送' : '加入队列'}
-                                </button>
-                            </div>
                         </div>
                         <div className="lg:col-span-4 flex flex-col gap-6 bg-gray-50 p-6 rounded-xl border border-gray-100">
                             {workMode === 'video' ? (
@@ -2384,9 +2527,10 @@ export default function App() {
                             </div>
                             <div className="space-y-3">
                                 <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">时长</label>
-                                <div className="grid grid-cols-2 gap-2">
+                                <div className="grid grid-cols-3 gap-2">
                                     <button onClick={() => setDuration('10s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '10s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>10秒</button>
                                     <button onClick={() => setDuration('15s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '15s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>15秒</button>
+                                    <button onClick={() => setDuration('25s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '25s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>25秒(PRO)</button>
                                 </div>
                             </div>
                             <div className="space-y-3">
@@ -2414,7 +2558,6 @@ export default function App() {
                             <div className="flex bg-gray-100 p-1 rounded-lg mb-2">
                                 <button onClick={() => setBatchMode('script')} className={`flex-1 py-1.5 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-all ${batchMode === 'script' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><IconScript size={14} /> 台词模式</button>
                                 <button onClick={() => setBatchMode('repeat')} className={`flex-1 py-1.5 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-all ${batchMode === 'repeat' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><IconRepeat size={14} /> 重复模式</button>
-                                <button onClick={() => setBatchMode('excel')} className={`flex-1 py-1.5 text-xs font-medium rounded-md flex items-center justify-center gap-1.5 transition-all ${batchMode === 'excel' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}><IconLayers size={14} /> Excel模式</button>
                             </div>
                             <button onClick={handleOpenBatchModal} className="w-full py-3.5 bg-blue-600 text-white rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-sm"><IconCopy size={18} />批量生成</button>
                         </div>
@@ -2670,14 +2813,12 @@ export default function App() {
                   <div className="flex items-center justify-between p-5 border-b border-gray-100 bg-white">
                       <div>
                         <h3 className="font-bold text-gray-900 text-lg">
-                          {batchMode === 'script' ? '批量文案录入' : (batchMode === 'repeat' ? '重复生成设置' : 'Excel 批量导入')}
+                          {batchMode === 'script' ? '批量文案录入' : '重复生成设置'}
                         </h3>
                         <p className="text-xs text-gray-500 mt-1">
                           {batchMode === 'script'
                             ? '每一行将生成一个独立任务。'
-                            : (batchMode === 'repeat'
-                                ? '将重复生成当前提示词。'
-                                : '上传 Excel 模板 + 多张图片，系统会按“图片地址”自动匹配并按顺序提交。')}
+                            : '将重复生成当前提示词。'}
                         </p>
                       </div>
                       <button onClick={() => setShowBatchModal(false)} className="text-gray-400 hover:text-gray-900 transition-colors p-1 hover:bg-gray-100 rounded-full"><IconX size={20} /></button>
@@ -2689,106 +2830,11 @@ export default function App() {
                                   <div key={idx} className="flex gap-3 items-center animate-in slide-in-from-left-2 duration-300"><span className="text-xs font-mono text-gray-400 w-6 text-right">{idx + 1}.</span><input ref={idx === batchScripts.length - 1 ? batchInputRef : null} type="text" value={String(script)} placeholder={idx === batchScripts.length - 1 ? "输入新台词文案..." : ""} onChange={(e) => handleScriptChange(idx, e.target.value)} className="flex-1 bg-white border border-gray-300 rounded-lg px-4 py-3 text-sm text-gray-900 focus:outline-none focus:border-blue-500 transition-all shadow-sm" /></div>
                               ))}
                           </div>
-                      ) : (batchMode === 'repeat' ? (
+                      ) : (
                           <div className="w-full max-w-sm space-y-6">
                               <div className="flex items-center justify-center gap-4"><button onClick={() => setRepeatCount(c => Math.max(1, c - 1))} className="w-12 h-12 rounded-full bg-white border border-gray-200 flex items-center justify-center shadow-sm"><IconMinus size={20} /></button><div className="text-center"><input type="number" min="1" value={repeatCount} onChange={(e) => setRepeatCount(Math.max(1, parseInt(e.target.value) || 1))} className="text-5xl font-bold text-gray-800 bg-transparent w-32 text-center focus:outline-none" /><div className="text-xs text-gray-400 mt-1">次重复</div></div><button onClick={() => setRepeatCount(c => c + 1)} className="w-12 h-12 rounded-full bg-white border border-gray-200 flex items-center justify-center shadow-sm"><IconPlus size={20} /></button></div>
                           </div>
-                      ) : (
-                          <div className="w-full space-y-4">
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                  <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-                                      <div className="text-xs font-semibold text-gray-600">1) 上传 Excel 模板</div>
-                                      <input ref={batchExcelFileInputRef} type="file" accept=".xlsx,.xls" onChange={handleBatchExcelTemplateUpload} className="hidden" />
-                                      <button onClick={() => batchExcelFileInputRef.current?.click()} disabled={excelBatchLoading} className={`w-full px-3 py-2 text-xs font-bold rounded-lg border transition-colors ${excelBatchLoading ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white border-blue-200 text-blue-700 hover:bg-blue-50'}`}>
-                                          {excelBatchLoading ? '解析中...' : '选择 Excel 文件'}
-                                      </button>
-                                      <div className="text-[11px] text-gray-500 break-all">
-                                          {excelBatchFileName ? `已加载：${excelBatchFileName}` : '支持 .xlsx/.xls，默认读取第一个工作表'}
-                                      </div>
-                                  </div>
-                                  <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-                                      <div className="text-xs font-semibold text-gray-600">2) 批量上传图片</div>
-                                      <input ref={batchExcelImagesInputRef} type="file" accept="image/*" multiple onChange={handleBatchExcelImagesUpload} className="hidden" />
-                                      <button onClick={() => batchExcelImagesInputRef.current?.click()} className="w-full px-3 py-2 text-xs font-bold rounded-lg border border-emerald-200 text-emerald-700 bg-white hover:bg-emerald-50 transition-colors">
-                                          选择多张图片
-                                      </button>
-                                      <div className="text-[11px] text-gray-500">
-                                          {excelBatchImageNames.length > 0 ? `已上传 ${excelBatchImageNames.length} 张图片` : '图片文件名将和“图片地址”列自动匹配（如 1.png）'}
-                                      </div>
-                                  </div>
-                              </div>
-
-                              {excelBatchError && (
-                                  <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
-                                      {String(excelBatchError || '')}
-                                  </div>
-                              )}
-
-                              <div className="text-xs text-gray-600 bg-white border border-gray-200 rounded-lg px-3 py-2">
-                                  已解析 <span className="font-semibold">{excelBatchRows.length}</span> 行，
-                                  需要匹配图片 <span className="font-semibold">{excelRowsWithImageMarker.length}</span> 行，
-                                  已匹配 <span className="font-semibold text-emerald-600">{excelMatchedImageCount}</span> 行
-                              </div>
-
-                              {excelBatchRows.length > 0 ? (
-                                  <div className="max-h-[320px] overflow-auto rounded-lg border border-gray-200 bg-white">
-                                      <table className="w-full text-xs">
-                                          <thead className="bg-gray-50 text-gray-500">
-                                              <tr>
-                                                  <th className="px-3 py-2 text-left font-semibold">行号</th>
-                                                  <th className="px-3 py-2 text-left font-semibold">台词/提示词</th>
-                                                  <th className="px-3 py-2 text-left font-semibold">图片标记</th>
-                                                  <th className="px-3 py-2 text-left font-semibold">次数</th>
-                                                  <th className="px-3 py-2 text-left font-semibold">匹配状态</th>
-                                              </tr>
-                                          </thead>
-                                          <tbody>
-                                              {excelBatchRows.map((row) => {
-                                                  const marker = String(row?.imageMarker || '');
-                                                  const hasMarker = Boolean(marker);
-                                                  const hasMappedImage = hasMarker ? Boolean(excelBatchImageMap[marker]) : Boolean(activeProject?.image);
-                                                  const needImage = generationType === 'image';
-                                                  let statusText = '文本任务';
-                                                  let statusClass = 'text-blue-600';
-
-                                                  if (needImage) {
-                                                      if (hasMappedImage) {
-                                                          statusText = hasMarker ? '已匹配图片' : '使用默认图';
-                                                          statusClass = 'text-emerald-600';
-                                                      } else {
-                                                          statusText = hasMarker ? '缺少匹配图' : '缺少默认图';
-                                                          statusClass = 'text-red-600';
-                                                      }
-                                                  }
-
-                                                  return (
-                                                      <tr key={`${row.rowIndex}-${row.script}`} className="border-t border-gray-100">
-                                                          <td className="px-3 py-2 align-top text-gray-500">{row.rowIndex}</td>
-                                                          <td className="px-3 py-2 align-top text-gray-800 max-w-[420px]">
-                                                              <div className="truncate" title={String(row.script || '')}>{String(row.script || '')}</div>
-                                                          </td>
-                                                          <td className="px-3 py-2 align-top text-gray-600">{row.imageMarkerRaw || '-'}</td>
-                                                          <td className="px-3 py-2 align-top text-gray-600">{row.repeatCount}</td>
-                                                          <td className={`px-3 py-2 align-top font-semibold ${statusClass}`}>{statusText}</td>
-                                                      </tr>
-                                                  );
-                                              })}
-                                          </tbody>
-                                      </table>
-                                  </div>
-                              ) : (
-                                  <div className="text-xs text-gray-400 bg-white border border-dashed border-gray-300 rounded-lg px-4 py-6 text-center">
-                                      请先上传 Excel 模板文件
-                                  </div>
-                              )}
-
-                              <div className="flex justify-end">
-                                  <button onClick={clearExcelBatchState} className="px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 bg-white border border-gray-300 rounded-lg hover:bg-gray-50">
-                                      清空导入数据
-                                  </button>
-                              </div>
-                          </div>
-                      ))}
+                      )}
                   </div>
                   <div className="p-5 border-t border-gray-200 bg-white flex justify-end gap-3"><button onClick={() => setShowBatchModal(false)} className="px-5 py-2.5 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg">取消</button><button onClick={handleBatchAddToQueue} className="px-6 py-2.5 bg-blue-600 text-white text-sm font-bold rounded-lg hover:bg-blue-700 shadow-sm">添加任务</button></div>
               </div>
@@ -2887,9 +2933,10 @@ export default function App() {
                                       </div>
                                       <div className="space-y-2">
                                           <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider">时长</label>
-                                          <div className="grid grid-cols-2 gap-2">
+                                          <div className="grid grid-cols-3 gap-2">
                                               <button onClick={() => setDuration('10s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '10s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>10秒</button>
                                               <button onClick={() => setDuration('15s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '15s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>15秒</button>
+                                              <button onClick={() => setDuration('25s')} className={`px-3 py-2.5 rounded-lg text-sm border font-medium transition-all ${duration === '25s' ? 'bg-white border-blue-500 text-blue-600 shadow-sm' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'}`}>25秒(PRO)</button>
                                           </div>
                                       </div>
                                       <div className="space-y-2">
@@ -2979,7 +3026,6 @@ export default function App() {
                               <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
                                   <button onClick={() => setBatchMode('script')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'script' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>台词模式</button>
                                   <button onClick={() => setBatchMode('repeat')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'repeat' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>重复模式</button>
-                                  <button onClick={() => setBatchMode('excel')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${batchMode === 'excel' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>Excel模式</button>
                               </div>
 
                               <div className="flex bg-gray-100 p-1 rounded-lg border border-gray-200">
@@ -2995,7 +3041,7 @@ export default function App() {
                               </div>
                           )}
 
-                          {batchMode !== 'excel' && generationType === 'image' && !activeProject?.image && (
+                          {generationType === 'image' && !activeProject?.image && (
                               <div className="text-xs text-red-600">
                                   图生模式需要上传「默认图片」。聊天框里也可以直接附带图片发送。
                               </div>
