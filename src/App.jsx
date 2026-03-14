@@ -1201,12 +1201,12 @@ export default function App() {
         ? `${window.location.origin}${String(videosBase)}`
         : String(videosBase || '');
       const authLine = config.apiKey ? `  -H "Authorization: Bearer ${config.apiKey}" \\\n` : '';
-      const seconds = parseVideoSeconds(duration);
+      const seconds = parseVideoSeconds(duration) || '15';
 
       const previewJson = {
         prompt: previewPrompt,
         model: String(selectedModelName || 'sora-2'),
-        ...(seconds ? { seconds } : {}),
+        seconds,
         size: getVideoSizeByOrientation(orientation),
         ...(generationType === 'image' ? { input_reference: activeProject.image || 'data:image/...' } : {}),
       };
@@ -1937,7 +1937,7 @@ export default function App() {
           if (!prompt) throw new Error('Prompt is empty');
 
           const videosBase = resolveVideosBaseUrl(config.baseUrl);
-          const seconds = parseVideoSeconds(taskVideoDuration);
+          const seconds = parseVideoSeconds(taskVideoDuration) || '15';
           let upstreamId = taskUpstreamTaskId;
 
           if (!upstreamId) {
@@ -1946,7 +1946,7 @@ export default function App() {
             const payload = {
               prompt,
               model: String(taskModel || 'sora-2'),
-              ...(seconds ? { seconds } : {}),
+              seconds,
               size: getVideoSizeByOrientation(taskVideoOrientation),
               ...(taskType === 'image' ? { input_reference: taskImage } : {}),
             };
