@@ -2320,7 +2320,7 @@ export default function App() {
                         <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">{String(activeProject?.name || '')}<span className="text-xs font-normal text-gray-500 bg-gray-100 px-2 py-0.5 rounded">项目配置</span></h2>
                     </div>
                     <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                        <div className="lg:col-span-8 flex flex-col gap-6">
+                        <div className={`${videoTaskMode === 'batch' ? 'lg:col-span-12' : 'lg:col-span-8'} flex flex-col gap-6`}>
                             <div className="flex items-center gap-2 mb-2">
                                 <button onClick={() => { setVideoTaskMode('image'); setGenerationType('image'); }} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${videoTaskMode === 'image' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconImage size={16} /> 图生视频</button>
                                 <button onClick={() => { setVideoTaskMode('text'); setGenerationType('text'); }} className={`px-3 py-1.5 text-sm font-medium rounded transition-colors flex items-center gap-2 border ${videoTaskMode === 'text' ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}><IconType size={16} /> 文生视频</button>
@@ -2372,11 +2372,6 @@ export default function App() {
                                 </>
                             ) : (
                                 <div className="space-y-4">
-                                    <div className="space-y-2">
-                                        <label className="text-xs font-semibold text-gray-500 uppercase tracking-wider flex justify-between">总提示词 (Master Prompt，可选)</label>
-                                        <textarea value={String(activeProject?.prompt || '')} onChange={(e) => updateActiveProject('prompt', e.target.value)} className="w-full bg-gray-50 border border-gray-200 rounded-lg p-4 text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all resize-none min-h-[120px] font-mono text-sm leading-relaxed" placeholder="可选：使用“这是台词文案”占位，把每行台词注入主提示词。" />
-                                    </div>
-
                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <div className="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
                                             <div className="text-xs font-semibold text-gray-600">1) 上传 Excel 模板</div>
@@ -2473,6 +2468,7 @@ export default function App() {
                                 </div>
                             )}
                         </div>
+                        {videoTaskMode !== 'batch' && (
                         <div className="lg:col-span-4 flex flex-col gap-6 bg-gray-50 p-6 rounded-xl border border-gray-100">
                             {workMode === 'video' ? (
                                 <>
@@ -2561,6 +2557,7 @@ export default function App() {
                             </div>
                             <button onClick={handleOpenBatchModal} className="w-full py-3.5 bg-blue-600 text-white rounded-lg font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all shadow-sm"><IconCopy size={18} />批量生成</button>
                         </div>
+                        )}
                     </div>
                 </section>
 
