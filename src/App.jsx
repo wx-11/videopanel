@@ -545,7 +545,7 @@ const getVideoSizeByOrientation = (orientation) => (orientation === 'landscape' 
 const parseVideoSeconds = (value) => {
   const num = parseInt(String(value || '').replace(/[^\d]/g, ''), 10);
   if (!Number.isFinite(num) || num <= 0) return null;
-  return num;
+  return String(num);
 };
 
 const resolveVideosBaseUrl = (rawBaseUrl) => {
@@ -1202,7 +1202,7 @@ export default function App() {
       const previewJson = {
         prompt: previewPrompt,
         model: String(selectedModelName || 'sora-2'),
-        ...(Number.isFinite(seconds) ? { seconds } : {}),
+        ...(seconds ? { seconds } : {}),
         size: getVideoSizeByOrientation(orientation),
         ...(generationType === 'image' ? { input_reference: activeProject.image || 'data:image/...' } : {}),
       };
@@ -1943,7 +1943,7 @@ export default function App() {
             const payload = {
               prompt,
               model: String(taskModel || 'sora-2'),
-              ...(Number.isFinite(seconds) ? { seconds } : {}),
+              ...(seconds ? { seconds } : {}),
               size: getVideoSizeByOrientation(taskVideoOrientation),
               ...(taskType === 'image' ? { input_reference: taskImage } : {}),
             };
