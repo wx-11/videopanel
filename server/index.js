@@ -52,6 +52,7 @@ const COMFYUI2API_TOKEN = String(process.env.COMFYUI2API_TOKEN || '').trim();
 
 const PORT = Math.max(1, parseInt(process.env.PORT || '18130', 10) || 18130);
 const HOST = String(process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
+const SHUTDOWN_TIMEOUT_MS = Math.max(1000, parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '8000', 10) || 8000);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -493,8 +494,17 @@ const serveStatic = (req, res) => {
   res.end('Missing dist build');
 };
 
+let isShuttingDown = false;
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
+
+  if (isShuttingDown) {
+    res.setHeader('Connection', 'close');
+    res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end('Server is shutting down');
+    return;
+  }
 
   const url = (() => {
     try {
@@ -619,6 +629,56 @@ const server = http.createServer(async (req, res) => {
 
   serveStatic(req, res);
 });
+
+const activeSockets = new Set();
+server.on('connection', (socket) => {
+  activeSockets.add(socket);
+  socket.on('close', () => activeSockets.delete(socket));
+  if (isShuttingDown) {
+    try { socket.end(); } catch (e) { }
+  }
+});
+
+const forceCloseAllSockets = () => {
+  for (const socket of activeSockets) {
+    try { socket.destroy(); } catch (e) { }
+  }
+};
+
+const gracefulShutdown = (signal) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  // eslint-disable-next-line no-console
+  console.log(`[sora2-manager] received ${signal}, shutting down...`);
+
+  for (const socket of activeSockets) {
+    try { socket.end(); } catch (e) { }
+  }
+
+  const forceTimer = setTimeout(() => {
+    // eslint-disable-next-line no-console
+    console.warn(`[sora2-manager] shutdown timeout (${SHUTDOWN_TIMEOUT_MS}ms), force closing ${activeSockets.size} socket(s)`);
+    forceCloseAllSockets();
+  }, SHUTDOWN_TIMEOUT_MS);
+  if (typeof forceTimer?.unref === 'function') forceTimer.unref();
+
+  server.close((err) => {
+    clearTimeout(forceTimer);
+    if (err) {
+      // eslint-disable-next-line no-console
+      console.error(`[sora2-manager] shutdown error: ${String(err?.message || err)}`);
+      process.exit(1);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log('[sora2-manager] shutdown complete');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
