@@ -2229,7 +2229,6 @@ export default function App() {
               </div>
               <div className="flex items-center gap-3">
                   <button onClick={() => setShowDebug(!showDebug)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-mono rounded-md transition-colors ${showDebug ? 'bg-gray-100 text-green-600' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'}`}><IconTerminal size={14} /> 日志</button>
-                  <button onClick={() => setShowSettings(true)} className="p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors" title="设置"><IconSettings size={20} /></button>
               </div>
           </header>
 
@@ -2435,7 +2434,6 @@ export default function App() {
           </div>
           <div className="flex items-center gap-3">
               <button onClick={() => setShowDebug(!showDebug)} className={`flex items-center gap-2 px-3 py-1.5 text-xs font-mono rounded-md transition-colors ${showDebug ? 'bg-gray-100 text-green-600' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'}`}><IconTerminal size={14} /> 日志</button>
-              <button onClick={() => setShowSettings(true)} className="p-2 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors" title="设置"><IconSettings size={20} /></button>
           </div>
       </header>
 
